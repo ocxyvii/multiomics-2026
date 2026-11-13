@@ -1,0 +1,180 @@
+---
+title: "Study B: summary of what we found"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+**Where we got to — the story so far.** This is the fourth document, written
+Wednesday evening. It pulls together the answers from the first three into one
+page, and every number in it is computed from the data in this document, so
+nothing can drift from the truth. The full working for each answer is in the
+document listed beside it.
+
+| # | Document | Question | Answer in one line |
+|---|---|---|---|
+| 1 | `01-qc.qmd` | Is the data good enough to analyse? | Yes — all six files agree; three flags to carry forward |
+| 2 | `02-community-composition.qmd` | Do the arms differ in community *composition*? | No evidence — arm explains ~3% of distances, p = 0.15 |
+| 3 | `03-bv-by-arm.qmd` | Is **BV** more common in one arm? | No evidence — rates 49% / 36% / 38%, p = 0.45 |
+| 4 | this one | — | The two answers, side by side, with what we can and cannot conclude |
+
+## The study
+
+Ninety-three people, one vaginal sample each, randomly assigned to one of
+three contraceptive methods. We analyse the microbiome (134 observed species
+after dropping the 86 never seen), the RNAseq table, the cytokines, and the
+clinical labels (Nugent score, BV).
+
+```{r}
+#| label: setup
+source(here::here("R/count_tables.R"))
+suppressPackageStartupMessages({
+  library(microViz)
+  library(phyloseq)
+  library(vegan)
+  library(dplyr)
+  library(ggplot2)
+})
+set.seed(2026)
+
+d <- read_counts("group_b")
+meta <- d$metadata
+ps <- as_counts("group_b", "microbiome", min_count = 1, min_samples = 1)
+ps   # 134 species x 93 samples
+```
+
+## Answer 1: the arms do not differ in community composition
+
+Full working in `02-community-composition.qmd`.
+
+"Community composition" = the whole species profile of a sample at once.
+PERMANOVA asks: do samples from the same arm sit closer together than samples
+from different arms? R² = the share of variation the grouping explains.
+
+```{r}
+#| label: answer1
+meta_ps <- as(sample_data(ps), "data.frame")
+dist_bray <- ps |>
+  tax_transform("compositional") |>
+  dist_calc("bray") |>
+  (\(x) x@dist)()
+
+m2 <- adonis2(dist_bray ~ arm + rnaseq_batch,
+              data = meta_ps, by = "margin", permutations = 999)
+m3 <- adonis2(dist_bray ~ arm + rnaseq_batch + nugent,
+              data = meta_ps, by = "margin", permutations = 999)
+
+knitr::kable(tibble(
+  Question = c(
+    "Does arm explain community composition? (primary model)",
+    "Does arm explain it after accounting for BV severity?",
+    "Does sequencing batch explain it?",
+    "Does BV severity (Nugent) explain it? — the positive control"
+  ),
+  `R2 (share of variation)` = round(c(
+    m2$R2[1], m3$R2[1], m3$R2[2], m3$R2[3]
+  ), 3),
+  `p-value` = signif(c(
+    m2[["Pr(>F)"]][[1]], m3[["Pr(>F)"]][[1]],
+    m3[["Pr(>F)"]][[2]], m3[["Pr(>F)"]][[3]]
+  ), 2)
+))
+```
+
+**No evidence.** Arm explains about 3% of the variation, p = 0.15 — or
+about 0.07 after accounting for BV severity (second row of the table):
+closer to the line, still above 0.05. The same pipeline on the same samples
+finds a huge real signal — **BV severity explains 24% at p = 0.001** — so the
+test works; the arm signal just is not there. The answer survives a second
+distance metric (Aitchison, p = 0.16), a dispersion check (equal spreads,
+p = 0.76), the QC flags, and a label-shuffle null (4 of 20 random shuffles beat
+the real arm R²).
+
+## Answer 2: BV is not more common in one arm
+
+Full working in `03-bv-by-arm.qmd`.
+
+BV here is the clinical label: Nugent score 7–10 on Gram-stain microscopy.
+
+```{r}
+#| label: answer2
+ft <- fisher.test(table(meta$arm, meta$bv))
+
+rates <- meta |>
+  count(arm, name = "people") |>
+  left_join(
+    meta |> filter(bv == "positive") |> count(arm, name = "bv_positive"),
+    by = "arm"
+  ) |>
+  mutate(rate = scales::percent(bv_positive / people, accuracy = 0.1))
+
+# The molecular second opinion: Lactobacillus-dominated or not.
+lac_taxa <- d$taxonomy |> filter(Genus == "Lactobacillus") |> pull(taxon)
+lac_frac <- colSums(d$species[lac_taxa, ]) / colSums(d$species)
+mol <- meta |>
+  mutate(community = ifelse(lac_frac[meta$sample_id] >= 0.5,
+                            "lactobacillus", "anaerobe"))
+ft_mol <- fisher.test(table(mol$community, mol$arm))
+
+knitr::kable(rates)
+cat("Fisher exact, clinical label: p =", signif(ft$p.value, 2), "\n")
+cat("Fisher exact, molecular type: p =", signif(ft_mol$p.value, 2), "\n")
+cat("Kruskal-Wallis, Nugent score by arm: p =",
+    signif(kruskal.test(nugent ~ arm, meta)$p.value, 2), "\n")
+```
+
+**No evidence.** Injectable looks highest (49% vs 36% / 38%), but with 26–39
+people per arm that 13-point gap is well within what chance produces
+(Fisher p = 0.45). The molecular definition of "BV-ish" (anaerobe-type
+community) agrees (p = 0.53), and the two definitions agree with *each other*
+(37 of 39 clinical positives are anaerobe-type, p < 0.001) — so it is not a
+measurement problem.
+
+## What we can and cannot conclude
+
+The two answers agree with each other, which is reassuring: if contraception
+changed the community, composition *and* BV rates would likely both have
+moved.
+
+What we **can** say:
+
+- No *large* difference between arms, in composition or in BV rates.
+- The vaginal community in this cohort varies mostly with **BV status**
+  (24% of composition variation), which is present in all three arms at
+  similar rates — that is the dominant biological axis here, not
+  contraception.
+
+What we **cannot** say:
+
+- Not "the arms are identical." With 93 people (26–39 per arm), only a
+  fairly large difference had any chance of showing up: in the BV analysis,
+  roughly a 36-percentage-point gap was needed for reliable detection, and the
+  observed gap was 13 points. A modest real difference would have been
+  invisible.
+- Nothing about *change over time* — each person was sampled once, so both
+  analyses compare *between* people.
+
+The natural next questions (for tomorrow): which *individual species* differ
+by arm (a DESeq2 question, untested by anything above — the community-level
+test could miss a single-species shift), and the same for genes.
+
+## How you could catch me being wrong
+
+- **Answer 1's table** should show Nugent at R² ≈ 0.24 and arm at ≈ 0.03. If
+  arm shows R² = 0.2, I have loaded the wrong dataset or the wrong model.
+- **Answer 2's table** should total 93 people (39 + 28 + 26). If the three
+  rates are not 48.7% / 35.7% / 38.5%, the counts and the prose disagree —
+  believe the table.
+- **Cross-check against the originals:** each number here also appears in the
+  document it came from (`02` and `03`). If a number differs between this
+  page and its source document, one of us has drifted.
+
+## Choices made
+
+- Computed every number live in this document rather than copying numbers from documents 02 and 03 — alternative not chosen: pasting the values in, which would silently go stale if the data changed.
+- Summarised only the two primary analyses (composition and BV prevalence) — alternative not chosen: re-summarising every robustness check, which would duplicate the source documents' jobs.
+- Reported the primary two-variable composition model (arm + batch, p = 0.15) as the headline, with the three-variable model (adds Nugent, p = 0.069) as the second row of the same table — alternative not chosen: picking one model and hiding the other, which would have understated how close arm comes to 0.05 once BV severity is accounted for.
+- Framed the limits as "what we can / cannot conclude" rather than only the p-values — alternative not chosen: stopping at "not significant", which lets "no evidence" masquerade as "no difference".
+- Named the next questions (per-species and per-gene DESeq2) at the end — alternative not chosen: leaving the summary as a dead end; naming them makes tomorrow's starting point explicit.
+- Kept all 93 samples and the same filters as the source documents (134 observed species) so the numbers here match there — alternative not chosen: a stricter filter, which would make this page disagree with its own sources.

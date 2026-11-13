@@ -36,23 +36,28 @@ Answer before running anything below.
 
 **1. Of the 220 species, how many will you see in a single sample?**
 
-- *Your answer:*
+- So in a typical sample you see only about 24 of the 220 species. The vast majority of the 220 rows are zeros in any one sample
 
 **2. Of the 14,226 genes, how many will you see in a single sample?**
 
-- *Your answer:*
+- So in a typical sample you see nearly all 14,226 genes — only about 100–500 are zero. That's the opposite of the species table: genes
+ are almost all expressed in every sample, while most species are absent from any given sample.
+
 
 **3. Which table has a larger share of zero cells?**
 
-- *Your answer:*
+-  The species table has far more zeros
 
 **4. One sample has 438 bacterial reads against a median of about 28,700. What will be wrong with it?**
 
-- *Your answer:*
+- A sample with only 438 reDS IS FAR TOO SHALLOW TO REPRESENT THE COMMUNITY. Specifically, very few species detceted- with 438 reads you might only pickup the importants ones.
+- relative abundances are unreliable
+- It will distort any ordination or test
+- Compositional Distortion
 
 **5. A typical sample behaves like how many equally common species? Like how many equally expressed genes?**
 
-- *Your answer:*
+- so a typical microbiome sample behaves as if only about 3 species were equally abundant - even though 220 are possible . The community is extremely uneven, usually dominated by one or two species
 
 ## Part 2 — Ask, look, decide
 
@@ -64,6 +69,69 @@ saying which. Columns: library size, number of features detected, fraction of
 zeros, the share held by the largest feature, Shannon diversity, and the
 effective number of features.*
 
+```{r step1-per-sample-numbers}
+# Helper: given a count table and its feature-id column name,
+# compute per-sample statistics and return a data frame.
+per_sample_stats <- function(counts, id_col, table_name) {
+  # Identify the sample columns (all columns except the feature identifier)
+  sample_cols <- setdiff(colnames(counts), id_col)
+
+  # Pivot to long format: one row per feature–sample pair
+  long <- counts |>
+    pivot_longer(
+      cols      = all_of(sample_cols),
+      names_to  = "sample_id",
+      values_to = "count"
+    )
+
+  # Summarise per sample
+  long |>
+    group_by(sample_id) |>
+    summarise(
+      table              = table_name,
+      library_size       = sum(count),
+      features_detected  = sum(count > 0),
+      fraction_zeros     = mean(count == 0),
+      largest_feature_share = max(count) / sum(count),
+      # Shannon diversity: -sum( p * log(p) ) for non-zero p only
+      shannon_diversity  = {
+        p <- count / sum(count)
+        -sum(p[p > 0] * log(p[p > 0]))
+      },
+      effective_number_features = exp(shannon_diversity),
+      .groups = "drop"
+    )
+}
+
+# Build the combined data frame for both tables
+sample_stats <- bind_rows(
+  per_sample_stats(species, "taxon",          "species"),
+  per_sample_stats(genes,   "ensembl_gene_id", "genes")
+)
+
+sample_stats
+```
+
+```{r step1-check-dimensions}
+# Check: should be 942 rows (471 species + 471 genes)
+dim(sample_stats)
+count(sample_stats, table)
+```
+
+```{r step1-depth-histogram}
+# Histogram of library size (sample depth) for each table
+sample_stats |>
+  ggplot(aes(x = library_size, fill = table)) +
+  geom_histogram(bins = 40, alpha = 0.7, position = "identity") +
+  facet_wrap(~ table, scales = "free") +
+  labs(
+    x = "Library size (total counts)",
+    y = "Number of samples",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 14)
+```
+
 - Does it have 942 rows, 471 for each table?
   - *Your answer:*
 - Type `sum(species$P001_week_18)` in the console. Does it match Pi's library size for that sample?
@@ -72,6 +140,41 @@ effective number of features.*
   - *Your answer:*
 
 ### Step 2: a short report
+
+```{r step2-summary-table}
+# Median, min, and max of every numeric column, separately for each table
+numeric_cols <- setdiff(colnames(sample_stats), c("sample_id", "table"))
+
+sample_stats |>
+  group_by(table) |>
+  summarise(
+    across(
+      all_of(numeric_cols),
+      list(median = ~median(.x), min = ~min(.x), max = ~max(.x)),
+      .names = "{.col}_{.fn}"
+    ),
+    .groups = "drop"
+  ) |>
+  # Reshape to a readable table: one row per variable
+  pivot_longer(
+    cols      = -table,
+    names_to  = c("variable", ".value"),
+    names_sep = "_(?=[^_]+$)"
+  )
+```
+
+**Three unusual things.**
+
+1. The species table has a sample with only **438 reads** (library size min), against a median of ~28,700 — that sample is barely sequenced and will be unreliable in any comparison.
+
+2. A single species typically owns **60% of the reads** in a sample (median `largest_feature_share` = 0.60), and one sample is dominated 99.9% by one species — the microbiome is very uneven, unlike the gene table where the largest gene takes only ~8% of reads.
+
+3. The median effective number of species is just **3.2** out of 220 possible, meaning a typical sample behaves as if only about three species were equally common; the gene table is far more even, with a median effective number of ~1,050 out of 14,226.
+
+- Which medians were furthest from your Part 1 answers?
+  - *Your answer:*
+- Did Pi mention the 438-read sample? Did it claim anything you cannot find in the table?
+  - *Your answer:*
 
 Suggested request: *Under that data frame, add a summary table with the median,
 smallest and largest value of every column, separately for each table. Then
@@ -240,6 +343,8 @@ community, 20 genera instead of 10.
   - *Your answer:*
 - Two genes whose heatmap rows look alike, and what they do (check one on NCBI Gene yourself):
   - *Your answer:*
+
+# Section B
 
 ## Part 3 — Reach (optional)
 

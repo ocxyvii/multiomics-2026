@@ -1,0 +1,127 @@
+---
+title: "Contraceptive method, vaginal microbiome composition, and bacterial vaginosis"
+subtitle: "Study B — 93 people, three arms, one sample each"
+author: "Data Science for Biology workshop"
+date: today
+format:
+  revealjs:
+    theme: white
+    slide-number: true
+    self-contained: true
+    fig-align: center
+---
+
+# The question, in one sentence
+
+## 
+
+> **Do the three contraceptive methods differ in vaginal microbiome community composition or in the prevalence of bacterial vaginosis?**
+
+# What we did
+
+## 
+
+- **Dataset:** Study B contraception trial — 93 participants in three arms:
+  injectable (39), pill (28), and ring (26).
+- **Count table:** 220 species in rows, 93 samples in columns.
+- **Pre-filter:** Dropped the 86 species never observed in any sample, leaving
+  134 species. This removes noise and follows the QC recommendation.
+- **QC flags carried forward:** one shallow sample (B006, 5,247 reads); two
+  samples missing cytokines. None were dropped from the primary analysis.
+- **Community composition:** Bray–Curtis distance on compositional shares +
+  PERMANOVA; Aitchison distance as a robustness check; `betadisper` to check
+  equal dispersion.
+- **BV prevalence:** Fisher's exact test on the clinical Nugent label
+  (negative / intermediate / positive); molecular community type
+  (*Lactobacillus* fraction ≥ 0.5) as a second opinion.
+
+# Figure 1 — Community composition by arm
+
+## 
+
+![PCoA of Bray–Curtis distances, coloured by contraceptive arm](02-community-composition_files/figure-html/ord-arm-1.png){width="70%"}
+
+**Figure 1.** Principal coordinate analysis of Bray–Curtis distances between
+samples. Each point is one participant. The three colours (injectable, pill,
+ring) are intermixed across the plot — no arm occupies its own region. Axis 1
+explains 33.8% of the variation, axis 2 explains 26.0%.
+
+# Figure 2 — What actually structures the composition
+
+## 
+
+![Same PCoA, coloured by BV status](02-community-composition_files/figure-html/what-structures-1.png){width="70%"}
+
+**Figure 2.** The same Bray–Curtis ordination, now coloured by bacterial
+vaginosis status. BV status explains 24% of the compositional variation
+(p = 0.001), while contraceptive arm explains only about 3% (p = 0.15). The
+community varies with BV, not with contraceptive method.
+
+# Figure 3 — BV prevalence by arm
+
+## 
+
+![BV prevalence with 95% confidence intervals](03-bv-by-arm_files/figure-html/prevalence-plot-1.png){width="70%"}
+
+**Figure 3.** BV prevalence by contraceptive arm, with 95% confidence
+intervals. Injectable: 19/39 (48.7%); pill: 10/28 (35.7%); ring: 10/26
+(38.5%). The intervals overlap heavily, consistent with no true difference
+(Fisher exact p = 0.45).
+
+# Choice we made — community composition
+
+## 
+
+| | |
+|---|---|
+| **Route A (kept as primary)** | Bray–Curtis distance on compositional shares |
+| **Route B (kept as check)** | Aitchison distance (CLR + Euclidean) |
+| **Why keep both?** | Bray–Curtis is the ecology standard; Aitchison is the compositional-data standard. Agreement means the "no difference" verdict is not a distance artefact. |
+| **Source I opened** | Anderson 2001, *A new method for non-parametric multivariate analysis of variance*; Aitchison 1986, *The Statistical Analysis of Compositional Data*. |
+
+**Result:** both distances agree — R² ≈ 0.03, p ≈ 0.15.
+
+# Choice we made — BV definition
+
+## 
+
+| | |
+|---|---|
+| **Route A (kept as primary)** | Clinical BV label from Nugent score |
+| **Route B (kept as check)** | Molecular community type: *Lactobacillus* fraction ≥ 0.5 vs. anaerobe |
+| **Why keep both?** | Nugent is the clinical reference; the molecular type is a sequencing-based second opinion. Agreement means the result is not sensitive to how BV is defined. |
+| **Source I opened** | Nugent et al. 1991, *Journal of Clinical Microbiology*; Ravel et al. 2011, *PNAS* on vaginal community state types. |
+
+**Result:** both definitions agree — clinical p = 0.45, molecular p = 0.53.
+
+# The answer, stated plainly
+
+## 
+
+> **We found no evidence that the three contraceptive methods differ in vaginal microbiome community composition or in BV prevalence.**
+
+- Community composition: arm explains ~3% of variation, p = 0.15.
+- BV prevalence: rates are 49% / 36% / 38%, Fisher p = 0.45.
+- In both cases a real signal **is** present in the data — BV status itself
+  strongly structures composition (R² = 0.24, p = 0.001) — but that signal is
+  evenly distributed across the three arms.
+
+# What we do not believe about our own result
+
+## 
+
+- **We do not believe the arms are identical.** A study of 93 people can only
+  rule out fairly large differences; a modest true difference would be
+  invisible here.
+- **We do not believe we have proven "contraception does not affect the
+  microbiome."** We have only shown that this study does not detect an effect
+  on whole-community composition or BV prevalence.
+- **We do not believe the community-level test tells the whole story.** A
+  single species or gene could differ by arm even though the whole community
+  does not. That question needs a per-feature test such as DESeq2.
+
+# Thank you
+
+## 
+
+**Next question:** Which individual species or genes differ by arm?

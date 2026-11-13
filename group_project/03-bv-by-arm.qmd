@@ -1,0 +1,299 @@
+---
+title: "Study B: is bacterial vaginosis more common in one arm?"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+**Where we got to — the story so far.** Three documents, in the order we
+made them:
+
+| # | Document | Question | Answer in one line |
+|---|---|---|---|
+| 1 | `01-qc.qmd` | Is the data good enough to analyse? | Yes — all six files agree, no failed samples; three flags to carry forward |
+| 2 | `02-community-composition.qmd` | Do the arms differ in community *composition*? | No evidence — arm explains ~3% of distances, p = 0.15 |
+| 3 | this one | Is **BV** more common in one arm? | No evidence — rates 49% / 36% / 38%, p = 0.45; explained below |
+
+This one asks the simplest version of the contraception question: one
+person, one BV label (from the Nugent score), which arm are they in?
+
+Two definitions of BV are available and we use both, because they answer
+slightly different questions:
+
+- **The clinical label**, `bv` in the metadata, derived from the Nugent score
+  (Gram-stain microscopy: 0–3 negative, 4–6 intermediate, 7–10 positive).
+  This is what a clinician would call BV.
+- **The molecular community**, from Tuesday's anatomy module: the fraction of
+  each sample's reads that belong to *Lactobacillus*, split at 0.5 into
+  `lactobacillus` vs `anaerobe` communities.
+
+## Setup
+
+```{r}
+#| label: setup
+source(here::here("R/count_tables.R"))
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+})
+set.seed(2026)
+
+d <- read_counts("group_b")   # all six Study B files
+meta <- d$metadata
+```
+
+## The answer first, in plain words
+
+If you only read one section, read this one; everything after it is the
+working that backs it up. It is also computed from the data, so the table
+cannot drift away from the truth.
+
+```{r}
+#| label: answer-table
+answer_table <- meta |>
+  count(arm, name = "people") |>
+  left_join(
+    meta |> filter(bv == "positive") |> count(arm, name = "bv_positive"),
+    by = "arm"
+  ) |>
+  mutate(
+    bv_positive = coalesce(bv_positive, 0),
+    rate = scales::percent(bv_positive / people, accuracy = 0.1)
+  )
+knitr::kable(answer_table)   # as a proper table, not console text
+```
+
+Injectable looks highest. **But the answer is no: there is no evidence that
+BV is more common in one arm.** Three reasons, in order of how much each
+matters:
+
+**1. The gap between the arms is smaller than the noise.** With only 26–39
+people per arm, the counts bounce around on their own: ask 39 people on the
+street and sometimes 19 say yes, sometimes 10, with nothing real behind the
+difference. The largest gap here is 13 percentage points (injectable 48.7%
+vs pill 35.7%) — exactly the size of gap that luck produces easily. The
+prevalence plot in section 1 shows it: every arm's uncertainty bar covers
+the other arms' estimates.
+
+**2. The formal test says the same thing.** Fisher's exact test asks: "if
+arm and BV had nothing to do with each other, how often would pure chance
+hand me a table at least this uneven?" Answer: about **45% of the time**
+(p = 0.45). A result that luck produces nearly half the time is not
+evidence of anything. For contrast: in `02-community-composition.qmd` the
+Nugent score explained 24% of community variation at p = 0.001 — that is
+what a real signal looks like. This is not one.
+
+**3. Two completely different measures of "BV" agree.** The clinical label
+(Nugent score, from Gram-stain microscopy) and the molecular community type
+(Lactobacillus-dominated or not, from the sequencing counts) are measured by
+totally different methods — and both give the same answer (p = 0.45 and
+p = 0.53). If contraception really shifted BV rates, it is very unlikely
+both measures would have missed it.
+
+**What this study did *not* show.** It did not show the arms have the same
+BV rate — no study can show that. With 28 people in the smallest arm, only a
+difference of roughly 36 percentage points or more (say 75% vs 40%) could
+have been reliably detected (section 3 works this out). A real 13-point
+difference would have been invisible. So the honest summary is:
+
+> **No evidence of a large difference; a modest real difference is
+> undetectable in a study this size.** Anyone claiming "contraception
+> doesn't affect BV" from these 93 people is claiming more than the data
+> support.
+
+The sections below show the working, in the order you would want to check
+it: the counts and their uncertainty (section 1), the tests (section 2),
+what the study could have detected (section 3), the molecular second opinion
+(sections 4–5), and the ways you can catch me being wrong at the end.
+
+## 1. The clinical label, by arm
+
+```{r}
+#| label: counts
+# The raw counts: one row per person, bv label from the Nugent score.
+tab <- table(meta$arm, meta$bv)
+tab
+addmargins(tab)   # row and column totals — should sum to 93
+
+# Prevalence of a positive (Nugent >= 7) in each arm:
+prev <- meta |>
+  count(arm, positive = bv == "positive", name = "n") |>
+  filter(positive) |>
+  left_join(meta |> count(arm, name = "total"), by = "arm") |>
+  mutate(prevalence = n / total)
+prev
+```
+
+Injectable has the highest point estimate — **19 of 39 (48.7%)**, against
+10 of 28 (35.7%) on the pill and 10 of 26 (38.5%) in the ring — but those are
+small samples. The next plot puts an uncertainty bar on each.
+
+```{r}
+#| label: prevalence-plot
+# 95% CI for each prevalence, from prop.test() (base R).
+prev_ci <- prev |>
+  rowwise() |>
+  mutate(
+    lo = prop.test(n, total)$conf.int[1],
+    hi = prop.test(n, total)$conf.int[2]
+  ) |>
+  ungroup()
+
+overall <- sum(prev_ci$n) / sum(prev_ci$total)
+
+ggplot(prev_ci, aes(arm, prevalence)) +
+  geom_hline(yintercept = overall, linetype = "dashed", colour = "grey50") +
+  geom_pointrange(aes(ymin = lo, ymax = hi), linewidth = 0.8) +
+  geom_text(aes(label = paste0(n, "/", total)), vjust = -1.2, size = 3.5) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.8)) +
+  labs(
+    title = "BV prevalence by arm, with 95% confidence intervals",
+    subtitle = paste0("Dashed line = all arms combined (",
+                      round(overall * 100), "%). Labels are positives / people."),
+    x = NULL, y = "Share with a positive Nugent score"
+  )
+```
+
+The three bars overlap heavily. Injectable sits highest, but every interval
+covers the other two arms' estimates.
+
+## 2. The tests
+
+**What the Fisher exact test does, plainly:** it takes the 3x3 table of
+counts and asks how many ways the same 93 people could have been distributed
+across the table's cells if the arm and the BV label had nothing to do with
+each other. The p-value is the share of those ways at least as lopsided as
+the real one. Unlike the chi-square test, it needs no "at least 5 per cell"
+rule, which matters here because only 3 people are `intermediate`.
+([Fisher's exact test, Wikipedia](https://en.wikipedia.org/wiki/Fisher%27s_exact_test).)
+
+```{r}
+#| label: tests
+# Primary: Fisher exact on the full 3 x 3 table.
+fisher.test(tab)
+
+# Chi-square agrees (p-value simulated, since cell counts are small):
+chisq.test(tab, simulate.p.value = TRUE, B = 20000)
+
+# Collapsing intermediate in with negative ("any BV" vs "none") changes nothing:
+fisher.test(table(meta$arm, meta$bv == "positive"))
+
+# Pairwise, since "more common in ONE arm" is a pairwise question:
+pairs <- combn(c("injectable", "pill", "ring"), 2)
+tibble(
+  comparison = paste(pairs[1, ], "vs", pairs[2, ]),
+  p_value = apply(pairs, 2, function(p) {
+    sub <- meta |> filter(arm %in% p)
+    fisher.test(table(sub$arm, sub$bv == "positive"))$p.value
+  })
+)
+
+# And the Nugent score as a whole (not just the >= 7 cut), by arm:
+kruskal.test(nugent ~ arm, data = meta)
+```
+
+Every way of asking agrees: **no evidence BV is more common in one arm.**
+
+- Fisher exact on the full table: p = **0.45**
+- Collapsed to positive vs not: p = 0.56
+- All three pairwise comparisons: p = 0.33, 0.46, 1.00 — none close to 0.05,
+  so the multiple-testing question ("should we correct for doing three
+  tests?") never even comes into play
+- Nugent as a number, not a label (Kruskal–Wallis): p = 0.63
+
+## 3. Could this study have seen a difference?
+
+A "not significant" is only meaningful next to what the study could have
+detected. With 28 people in the smallest arm, 80% power at alpha 0.05
+requires roughly a 36-percentage-point difference (base R's
+`power.prop.test`, below); the largest observed gap is 13 points.
+
+```{r}
+#| label: power
+# What prevalence would the pill arm need, vs 38.5% overall, for 80% power?
+power.prop.test(n = 28, p1 = 0.385, sig.level = 0.05, power = 0.8)
+```
+
+So the honest statement is: **a real 13-point difference between injectable
+and pill would have been invisible here** — this study can rule out large
+differences, not small ones.
+
+## 4. The anatomy module's view: the molecular community
+
+Tuesday defined a community type from the species table itself: each sample's
+*Lactobacillus* fraction of reads, split at 0.5. Ten species count as
+*Lactobacillus* here (`Genus == "Lactobacillus"` in the taxonomy file).
+
+```{r}
+#| label: molecular
+lac_taxa <- d$taxonomy |> filter(Genus == "Lactobacillus") |> pull(taxon)
+lac_frac <- colSums(d$species[lac_taxa, ]) / colSums(d$species)
+
+dat <- meta |>
+  mutate(
+    lacto_fraction = lac_frac[meta$sample_id],
+    community = ifelse(lacto_fraction >= 0.5, "lactobacillus", "anaerobe")
+  )
+
+# The anaerobe community is the molecular picture of BV. Its prevalence by arm:
+table(dat$community, dat$arm)
+fisher.test(table(dat$community, dat$arm))
+
+kruskal.test(lacto_fraction ~ arm, data = dat)
+```
+
+Same answer from the molecular side: anaerobe communities in 51% / 39% / 54%
+of injectable / pill / ring (Fisher p = 0.53); the full *Lactobacillus*
+fraction differs no more (Kruskal–Wallis p = 0.77).
+
+```{r}
+#| label: agreement
+# Do the two definitions of BV actually agree? (They should, or we are
+# not measuring the same thing twice.)
+table(dat$community, dat$bv)
+fisher.test(table(dat$community, dat$bv))
+```
+
+They agree strongly: 37 of 39 clinically-BV samples are anaerobe communities,
+45 of 51 negatives are lactobacillus communities (p < 0.001). The
+minority who disagree: 2 clinically-positive samples read as
+lactobacillus-dominated, and 6 negatives read as anaerobe-dominated —
+worth knowing they exist, and far too few to affect anything above.
+
+## Verdict
+
+**No evidence that BV is more common in one contraceptive arm.** The point
+estimates order themselves injectable (49%) > ring (38%) > pill (36%), but
+the confidence intervals overlap on every pair, Fisher's exact test gives
+p = 0.45, and the molecular community view agrees (p = 0.53). Given the study
+sizes, only a difference of about 35 percentage points or more could have
+been detected — the observed 13-point gap between the highest and lowest arms
+was never going to reach significance.
+
+## How you could catch me being wrong
+
+- **Check the counts by hand.** The `addmargins(tab)` output should have 93
+  people total: 39 injectable, 28 pill, 26 ring. If the totals are not 93 I
+  have lost or double-counted someone.
+- **Recompute one prevalence.** From the printed table: injectable has 19
+  positives out of 39. 19/39 = 0.487 — the plot's label says `19/39` and the
+  point should sit at 48.7%. If the point is elsewhere, the plot and the
+  table disagree.
+- **Change `bv == "positive"` to `bv != "negative"`** in the collapsed test.
+  It moves the 3 `intermediate` people into the "BV" side. I claim it changes
+  nothing (p stays around 0.56 — if it drops below 0.05 I was wrong to
+  collapse them).
+
+## Choices made
+
+- Used the clinical `bv` label (Nugent-based) as the primary outcome — alternative not chosen: the molecular community type, which I kept as a secondary view because it is defined from the species table and so is one step further from "what a clinician calls BV".
+- Fisher exact test as the primary test — alternative not chosen: chi-square alone, whose "5 per cell" rule of thumb is violated by the 3-person intermediate column (I ran it anyway as a check and it agrees).
+- Kept the three-level label (negative / intermediate / positive) in the primary test — alternative not chosen: collapsing to two levels first; I collapsed only as a sensitivity check.
+- Reported pairwise comparisons alongside the omnibus test — alternative not chosen: the omnibus alone, since "more common in ONE arm" is by definition a pairwise question.
+- No multiple-testing correction across the three pairwise tests — alternative not chosen: Holm correction; irrelevant here because all three p-values (0.33, 0.46, 1.00) are far from any threshold.
+- Kept `intermediate` (Nugent 4–6) out of "positive" in the primary contrast — alternative not chosen: counting them as BV-positive, which would use a cut-off the field disagrees on.
+- Wilson intervals from `prop.test()` for the prevalence plot — alternative not chosen: the Wald normal interval, which behaves badly at these small counts.
+- `power.prop.test` at the smallest arm's n (28) to state what the study could detect — alternative not chosen: reporting only the p-value, which would let "no difference" masquerade as "no detectable difference".
+- Community cut-off at 0.5 for the Lactobacillus fraction, as in Tuesday's module — alternative not chosen: 0.3 or 0.8, which Tuesday showed moves a few samples between groups but would not change a prevalence this far from half.
+- Dropped no samples — the QC report's flags (shallow `B006`, missing cytokines `B018`/`B029`) do not apply here, because the `bv` label and the lacto fractions of those three samples are all present and unremarkable. Alternative not chosen: excluding them anyway, which would have removed evidence for no reason.

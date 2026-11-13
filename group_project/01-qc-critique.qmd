@@ -1,0 +1,178 @@
+---
+title: "Critique of `01-qc.qmd` — what I would change and why"
+format: html
+---
+
+This document reviews `01-qc.qmd`, the Study B quality-control report. It is
+kept **separate** from that report on purpose: the QC report states what the
+data are like; this one judges how the checking was done. Nothing here edits
+`01-qc.qmd` — it is a list of findings, each with the evidence re-run from
+scratch, and a final list of the changes I would make if I revised it.
+
+Every claim below was re-computed against
+`data/2-workshop2/group_b_contraception/` today, not copied from the report.
+
+```{r}
+#| label: setup
+#| message: false
+source(here::here("R/count_tables.R"))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(ggplot2))
+
+d    <- read_counts("group_b")
+meta <- d$metadata
+sp   <- d$species
+gn   <- d$genes
+```
+
+## What the report gets right
+
+These choices are correct and should not change:
+
+- **Order checks with `identical()`, not `setequal()`.** Matching by exact
+  position is the check that catches the failure mode that silently corrupts
+  DESeq2 results. Re-verified: all three tables match the metadata order.
+- **Flag, don't drop.** A QC report should report problems, not quietly
+  reshape the dataset for every later document. Correct.
+- **Checking `bv` against the Nugent ≥ 7 cut-off.** A label checked against
+  the score it was derived from is a real QC catch, not busywork.
+- **Every number I could verify is accurate.** B006 = 5,247 counts; 86 of 220
+  species never observed; batch B2 RNA depth lower than B1 (median 12.0M vs
+  13.7M). The report says what is true.
+
+## Finding 1 — the metadata is never checked *against* the counts (the biggest gap)
+
+The report checks that the six files **agree with each other** (sample IDs
+match, in order) and that the metadata is **internally consistent** (`bv`
+agrees with Nugent). Both are good checks, but neither answers the question a
+mix-up would actually break: *do the sequences belong to the people the
+metadata says they do?* Sample IDs can match perfectly across all six files
+and still be attached to the wrong person's sequencing, because a swap at the
+lab happens upstream of every file.
+
+The cheapest guard is a biological sanity check: the counts should look like
+what the labels say. For vaginal microbiome data, the obvious one is
+Lactobacillus share against BV status — BV-positive samples are defined by
+*losing* Lactobacillus, so a mismatch pattern here is a red flag.
+
+```{r}
+#| label: lacto-by-bv
+# Lactobacillus share of each sample, split by the metadata's bv label.
+rel  <- sweep(sp, 2, colSums(sp), "/")        # each column / its own total
+lac  <- grepl("lactobacillus", rownames(rel), ignore.case = TRUE)
+share <- colSums(rel[lac, ])
+
+tapply(share, meta$bv, median) |> round(3)
+cat("correlation of Lactobacillus share with Nugent score:",
+    round(cor(share, meta$nugent), 2), "\n")
+```
+
+The result is exactly what vaginal-community biology predicts: BV-positive
+samples have a median Lactobacillus share of **2%**, BV-negative samples
+**97%**, and the share tracks the Nugent score with correlation **−0.84**.
+So the metadata and the counts belong to each other — but the report only
+learned this by accident, never having asked.
+
+```{r}
+#| label: lacto-plot
+#| fig-width: 7
+#| fig-height: 3.2
+ggplot(data.frame(bv = meta$bv, share = share),
+       aes(bv, share, colour = bv)) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", colour = "grey40") +
+  geom_jitter(width = 0.15, alpha = 0.6, size = 1.6, show.legend = FALSE) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Metadata and counts agree: Lactobacillus collapses in BV-positive samples",
+       subtitle = "One dot per sample; this pattern would break if samples or labels were swapped",
+       x = "BV status (metadata)", y = "Lactobacillus share")
+```
+
+## Finding 2 — one median hides the bimodality
+
+The report concludes: *"Lactobacillus (mostly L. iners and L. crispatus)
+dominates the median sample."* The overall median share is `r round(median(share), 2)`
+— technically true, but misleading. The distribution has **two humps**
+(Lacto-dominated samples near 100%, BV-like samples near 0%), and a median of
+0.57 sits in the empty valley between them, describing a sample that doesn't
+exist. The report's own Finding 1 pattern is what makes the summary wrong.
+
+The fix is one line: summarise **by group**, not overall — which is also
+exactly the summary that doubles as the sanity check in Finding 1.
+
+## Finding 3 — the two depth plots use different groupings, and the bar chart hides the tail
+
+The report plots microbiome depth by **arm** and RNA depth by **batch**, with
+no stated reason for the difference — and the metadata has only one batch
+column (`rnaseq_batch`). A reader cannot compare the two tables, and neither
+plot shows the interesting part of the data well: `geom_col()` draws 93 bars
+per group on a **linear** axis, so B006 (5,247 counts, median 29,212) is a
+nearly invisible sliver.
+
+```{r}
+#| label: depth-plot
+#| fig-width: 8
+#| fig-height: 3.6
+depth <- rbind(
+  data.frame(sample_id = colnames(sp), table = "Microbiome",
+             reads = colSums(sp), arm = meta$arm, batch = meta$rnaseq_batch),
+  data.frame(sample_id = colnames(gn), table = "RNAseq",
+             reads = colSums(gn), arm = meta$arm, batch = meta$rnaseq_batch)
+)
+
+ggplot(depth, aes(batch, reads)) +
+  geom_jitter(width = 0.15, alpha = 0.6, size = 1.2) +
+  stat_summary(fun = median, geom = "crossbar", width = 0.5, fatten = 1) +
+  facet_wrap(~ table, scales = "free_y") +
+  scale_y_log10(labels = scales::comma) +
+  labs(title = "Depth per sample, both tables, by sequencing batch",
+       subtitle = "Log scale: each step up is 10x. Bars cross the group medians.",
+       x = "Sequencing batch", y = "Total counts per sample (log)")
+```
+
+On the log scale the shallow tail is obvious at a glance, the two tables sit
+side by side under the same grouping, and the batch difference in RNA depth is
+still visible. The arm-vs-batch balance table the report already shows covers
+the confounding question, so depth only needs to be shown once, one way.
+
+## Finding 4 — a stated number with no code behind it
+
+The report states *"88% of the cells are zero"* in its findings text, but no
+chunk computes that number. It happens to be correct:
+
+```{r}
+#| label: zero-cells
+round(mean(sp == 0), 2)
+```
+
+…but a document that reviews data quality should not contain a single
+unsupported number. One line in the microbiome chunk fixes it.
+
+## Minor notes
+
+- **The all-zero-species check is framed as pass/fail** ("fewer than half the
+  species rows are all-zero"), but 86/220 all-zero rows is not a failure — it
+  is normal and only matters as a note to pre-filter before distance-based
+  analyses. A check that cannot fail is not a check; state it as a note.
+- **The cytokine section checks missingness only.** A one-line range summary
+  per cytokine would guard against a units mix-up (pg/mL read as ng/mL, or a
+  column in log units), which is the classic catch at this table.
+
+## Changes I would make to `01-qc.qmd`
+
+| # | Change | Why |
+|---|---|---|
+| 1 | Add a Lactobacillus-share-by-BV-group check (and Nugent correlation) to section 2 | Only check that catches metadata↔counts swaps; IDs matching is not enough |
+| 2 | Replace the overall "Lactobacillus dominates the median" sentence with the by-group summary | The overall median (0.57) describes a sample that doesn't exist |
+| 3 | Replace both depth plots with one log-scale dot plot by batch, faceted by table | Same grouping for both tables; makes the shallow tail visible |
+| 4 | Compute `mean(sp == 0)` in the microbiome chunk | No unsupported numbers in a QC report |
+| 5 | Reword the all-zero-species item as a note, not a pass/fail check | A check that cannot fail is not a check |
+| 6 | Add a per-cytokine range summary to section 5 | Catches units errors; costs one line |
+
+## Choices made
+
+- Kept this critique in a separate document (`01-qc-critique.qmd`) rather than editing `01-qc.qmd` in place — the alternative was patching the original, but a review should be readable alongside what it reviews.
+- Re-ran every claimed number against the raw files before agreeing with it — the alternative was trusting the report's own output, which is exactly how an error in a QC report survives into every later document.
+- Used Lactobacillus share as the metadata-vs-counts sanity check — the alternative was correlating microbiome vs RNA depth per sample, which catches file-level swaps but not label swaps, and is far less biologically interpretable.
+- Showed Finding 2 as a jitter plot rather than a histogram — the alternative, a histogram of the share, shows the two humps but makes the per-sample comparison by BV group harder to read.
+- Recommended a log-scale dot plot over the existing bar charts — the alternative was keeping bars with a log axis, but bars imply a summed quantity per category and 93 bars per group is visual noise.
+- Kept the report's "flag, don't drop" philosophy and all of its existing *Choices made* section untouched — the alternative was rewriting for style, which is not the point of a critique.

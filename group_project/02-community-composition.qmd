@@ -1,0 +1,343 @@
+---
+title: "Study B: do the three contraceptive methods differ in vaginal community composition?"
+format: html
+execute:
+  warning: false
+  message: false
+---
+
+**Where we got to — the story so far.** Three documents, in the order we
+made them:
+
+| # | Document | Question | Answer in one line |
+|---|---|---|---|
+| 1 | `01-qc.qmd` | Is the data good enough to analyse? | Yes — all six files agree; three flags to carry forward |
+| 2 | this one | Do the arms differ in community *composition*? | No evidence — arm explains ~3% of distances, p = 0.15; Nugent explains 24% |
+| 3 | `03-bv-by-arm.qmd` | Is **BV** more common in one arm? | No evidence — rates 49% / 36% / 38%, p = 0.45 |
+
+This one — the first analysis document, written Wednesday — follows Tuesday's
+ordination pipeline: look first, then PERMANOVA, then the checks that stop
+the test lying to us. The three arms are `injectable` (39 people), `pill`
+(28) and `ring` (26); one sample each, 93 in total. The grouping comes from
+the metadata (which method each person was assigned), not from any count
+table, so testing the microbiome table against it is fair.
+
+## Setup
+
+```{r}
+#| label: setup
+source(here::here("R/count_tables.R"))
+suppressPackageStartupMessages({
+  library(microViz)
+  library(phyloseq)
+  library(vegan)    # adonis2 (PERMANOVA) and betadisper
+  library(dplyr)
+  library(ggplot2)
+})
+set.seed(2026)   # so the permutation p-values are the same on every re-render
+
+# Study B species table. min_count = 1, min_samples = 1 drops the 86 species
+# that never appear in any sample — the QC report said to pre-filter those
+# before any distance-based analysis.
+ps <- as_counts("group_b", table = "microbiome", min_count = 1, min_samples = 1)
+ps
+```
+
+Every number below starts from these **134 species x 93 samples**.
+
+## The answer first, in plain words
+
+If you only read one section, read this one. Its table is computed from the
+data, so the numbers cannot drift from the truth; the sections after it are
+the working.
+
+**What the question means.** "Community composition" is which species live
+in each sample and how abundant each one is — the whole 134-species profile
+at once, not one species at a time. Two people can both have BV and still
+differ in composition; two with different BV status almost always do.
+
+**What the test does.** PERMANOVA measures how similar every pair of samples
+is (Bray-Curtis distance), then asks: do samples from the same arm sit
+closer together than samples from different arms? The **R2** is the share
+of all that variation the grouping explains. The **p-value** is how often
+chance alone — shuffling the labels — produces a result at least that
+strong.
+
+```{r}
+#| label: answer-table
+# One model, three variables, each tested as if it entered last (by =
+# "margin"). dist_ans is the same Bray-Curtis matrix the whole document uses.
+meta_ans <- as(sample_data(ps), "data.frame")
+dist_ans <- ps |> tax_transform("compositional") |> dist_calc("bray")
+ans <- adonis2(dist_ans@dist ~ arm + rnaseq_batch + nugent,
+               data = meta_ans, by = "margin", permutations = 999)
+
+tibble(
+  variable = c("Arm — which contraceptive method",
+               "Sequencing batch",
+               "Nugent score — BV severity"),
+  `R2 (share of variation explained)` = round(ans$R2[1:3], 3),
+  `p-value` = ans[["Pr(>F)"]][1:3]
+) |> knitr::kable()
+```
+
+**The answer: no evidence the arms differ in composition.** Three reasons,
+in the order of how much each matters:
+
+1. **Arm explains almost nothing: about 3%.** In the primary model (arm +
+   batch, section 2) it is R2 = 0.033, p = 0.15 — chance produces a 3% R2
+   easily. In the three-variable model in the table above (which adds BV
+   severity, so arm is tested after BV is accounted for) it is R2 = 0.030,
+   p = 0.069 — closer to the boundary, still above 0.05. Both models say
+   the same thing.
+
+2. **The same test finds a real signal in the same data.** The Nugent score
+   explains **24%** of the distances at p = **0.001**. That is what a true
+   difference looks like through this pipeline — so the pipeline works; the
+   arm signal just is not there. If contraceptive method had shifted
+   composition the way BV does, this table would have shown it.
+
+3. **The answer survives every alternative choice.** A second, completely
+   different distance (Aitchison) agrees (R2 = 0.029, p = 0.16). The
+   dispersions are equal, so PERMANOVA is not being fooled by one arm being
+   more spread out (section 3). The QC flags change nothing (section 7).
+   And the shuffle-null (section 6) shows the real R2 sitting in the middle
+   of what random labels produce — 4 of 20 shuffles beat it.
+
+**What this study did *not* show.** It did not show the arms have identical
+communities — no study can show that. With 93 people, a modest real
+difference would have been invisible; only a fairly large one had a chance.
+And each person was sampled once, so this compares *between people*, not
+change within a person over time.
+
+The sections below show the working: the ordination by eye (1), the test (2),
+the dispersion check (3), the second distance (4), what *does* structure the
+plot (5), the shuffle-null (6) and the robustness checks (7).
+
+## 1. Look first: the ordination
+
+```{r}
+#| label: dist
+# Each sample's counts become shares of that sample's total (compositional),
+# then Bray-Curtis distance between every pair of samples.
+pe <- ps |>
+  tax_transform("compositional") |>
+  dist_calc("bray")
+dist_bray <- pe@dist          # the distance matrix, in the @dist slot
+meta <- as(sample_data(ps), "data.frame")
+```
+
+```{r}
+#| label: ord-arm
+pe |> ord_calc("PCoA") |> ord_plot(colour = "arm")
+```
+
+The two axes hold most of the structure (33.8% and 26% of the variation), so
+this is a fairly complete two-dimensional view. Counting the points: 39
+injectable, 28 pill, 26 ring. The three colours are **mixed together** — no
+arm occupies its own corner of the plot.
+
+## 2. Test: PERMANOVA
+
+**What it does, in plain sentences:** PERMANOVA takes the distance matrix and
+asks, "when I group samples by arm, are samples from the same arm closer to
+each other than samples from different arms?" The R² is the share of all the
+pairwise variation that the grouping explains. The p-value comes from
+shuffling the labels many times and seeing how often a shuffle explains as
+much as the real grouping. (This is `adonis2` from
+[vegan](https://cran.r-project.org/package=vegan); the method is from Anderson
+2001, [*A new method for non-parametric multivariate analysis of
+variance*](https://doi.org/10.1111/j.0006-341X.2001.00470.x).)
+
+```{r}
+#| label: permanova
+# by = "margin": each term is tested as if it entered the model last, so
+# arm's R2 is what arm explains after accounting for sequencing batch.
+perm <- adonis2(dist_bray ~ arm + rnaseq_batch,
+               data = meta, by = "margin", permutations = 999)
+perm
+```
+
+Arm explains **R2 = 0.033, p = 0.15**. Batch explains essentially nothing
+(R2 = 0.006, p = 0.68). So the ordination's visual impression and the test
+agree: **no evidence the three arms differ in community composition.**
+
+## 3. The catch: are we sure we're comparing centres, not spreads?
+
+PERMANOVA has a known weakness: a small p-value can mean the group *centres*
+differ (what we're asking) *or* merely that one group is more spread out than
+the others. `betadisper` tests the spread directly, so we check it before
+trusting the PERMANOVA verdict.
+
+```{r}
+#| label: dispersion
+permutest(betadisper(dist_bray, meta$arm), permutations = 999)
+permutest(betadisper(dist_bray, meta$rnaseq_batch), permutations = 999)
+```
+
+Dispersion is equal across arms (p = 0.76) and batches (p = 0.16). So there is
+no spread difference that could masquerade as an arm difference — the "no
+difference" verdict stands on clean ground. (If dispersion *had* differed,
+the right response would have been to lean on ordination plots and report
+both.)
+
+## 4. A second distance, same question
+
+Bray-Curtis is one choice. The Aitchison distance (CLR transform, then
+Euclidean) is the compositional-data alternative — it measures differences in
+*log-ratios*, which is what compositional data are actually made of. The CLR
+transform here handled the zeros by adding half the smallest nonzero count in
+the whole table (that smallest count is 2, so it added 1) before taking logs.
+
+```{r}
+#| label: aitchison
+pe_clr <- ps |> tax_transform("clr") |> dist_calc("euclidean")
+
+adonis2(pe_clr@dist ~ arm + rnaseq_batch,
+        data = meta, by = "margin", permutations = 999)
+
+permutest(betadisper(pe_clr@dist, meta$arm), permutations = 999)
+pe_clr |> ord_calc("PCoA") |> ord_plot(colour = "arm")
+```
+
+Same story from a different angle: R2 = 0.029, p = 0.16, equal dispersion
+(p = 0.91), no clustering by arm in the plot.
+
+## 5. What *does* structure the plot
+
+The ordination obviously has structure — axis 1 holds 33.8% of the
+variation — it just isn't arm. Let's colour the same Bray-Curtis ordination by
+the BV status label (from the Nugent score, in the metadata) and test it the
+same way.
+
+```{r}
+#| label: what-structures
+pe |> ord_calc("PCoA") |> ord_plot(colour = "bv")
+
+adonis2(dist_bray ~ arm + nugent + rnaseq_batch,
+        data = meta, by = "margin", permutations = 999)
+
+# BV label and Nugent score, from the metadata, by arm:
+table(meta$arm, meta$bv)
+fisher.test(table(meta$arm, meta$bv))
+kruskal.test(nugent ~ arm, data = meta)
+```
+
+This is the contrast that makes the whole report interpretable:
+
+- **Nugent explains R2 = 0.24 of the distances (p = 0.001)** — the community
+  composition tracks BV status strongly, as it should.
+- **The three arms have similar BV rates** (49% / 36% / 38% positive;
+  Fisher p = 0.45, Nugent Kruskal p = 0.63), so what composition varies with
+  is present in all three arms at similar rates.
+- Even in this model, arm stays non-significant (R2 = 0.030, p = 0.058) —
+  borderline, which is worth knowing, but not evidence, especially after
+  we've already run two primary tests above it.
+
+## 6. What "no difference" looks like: a shuffle-null
+
+Tuesday's step 5, applied to our question: shuffle the arm labels 20 times,
+run PERMANOVA on each, and mark where the real R2 lands.
+
+```{r}
+#| label: shuffle-null
+real_r2 <- adonis2(dist_bray ~ arm, data = meta, permutations = 999)$R2[1]
+
+shuffled <- sapply(1:20, function(i) {
+  meta2 <- meta
+  meta2$arm <- sample(meta2$arm)          # arm labels, randomly reassigned
+  adonis2(dist_bray ~ arm, data = meta2, permutations = 99)$R2[1]
+})
+
+tibble(shuffled) |>
+  ggplot(aes(shuffled)) +
+  geom_histogram(bins = 12, fill = "grey85", colour = "black") +
+  geom_vline(xintercept = real_r2, colour = "red", linewidth = 1) +
+  labs(
+    title = "Arm R2 vs 20 random shuffles of the arm labels",
+    subtitle = paste0(
+      "Red line = real R2 (", round(real_r2, 3),
+      "). Shuffles range ", round(min(shuffled), 3), " to ",
+      round(max(shuffled), 3),
+      "; ", sum(shuffled >= real_r2), " of 20 shuffles beat it."
+    ),
+    x = "PERMANOVA R2 for arm"
+  )
+```
+
+**`r sum(shuffled >= real_r2)` of 20 random shuffles explained as much as the
+real arm labels did.** The real R2 sits in the middle of the noise
+distribution — that is exactly what "no evidence of a difference" looks like.
+
+## 7. Does the verdict survive the QC flags?
+
+The QC report flagged one shallow sample (`B006`, 5,247 reads) and told us to
+pre-filter never-observed species (done in setup). Robustness check:
+
+```{r}
+#| label: robustness
+# Drop the shallow sample:
+keep <- meta$sample_id != "B006"
+db2 <- as.dist(as.matrix(dist_bray)[keep, keep])
+adonis2(db2 ~ arm + rnaseq_batch,
+        data = meta[keep, ], by = "margin", permutations = 999)
+
+# And without any species pre-filter (all 220):
+ps0 <- as_counts("group_b", table = "microbiome")
+db0 <- ps0 |>
+  tax_transform("compositional") |>
+  dist_calc("bray") |>
+  (\(x) x@dist)()
+adonis2(db0 ~ arm, data = meta, permutations = 999)
+```
+
+Dropping `B006`: R2 = 0.034, p = 0.11. Keeping all 220 species: R2 = 0.033,
+p = 0.15. Neither QC flag changes the verdict.
+
+## Verdict
+
+**No evidence that the three contraceptive methods differ in vaginal
+community composition.** Arm explains about 3% of the variation in
+distances, p = 0.15, on two different distance metrics, with equal dispersion,
+with and without the QC-flagged sample. What composition *does* track here is
+BV status (Nugent R2 = 0.24) — and the arms carry BV at similar rates.
+
+Two honest caveats:
+
+1. **This is not "proof of no difference".** With 39/28/26 people per arm we
+   could only detect a fairly large difference. A real 3% difference would
+   have been invisible here.
+2. The composition-vs-BV analysis above suggests the more interesting Study B
+   questions might be at the level of *which species* differ by arm
+   (a DESeq2 question, another document), not whether the community as a
+   whole shifts.
+
+## How you could catch me being wrong
+
+- **Count the points on the first ordination** by colour: 39 injectable, 28
+  pill, 26 ring. If you see 471 points I accidentally loaded the instructional
+  dataset.
+- **Rerun the `permanova` chunk with `permutations = 9999`.** The p-value for
+  arm should stay near 0.15; if it jumps to 0.03 or 0.5, something is wrong
+  with my seed or model.
+- **Replace `by = "margin"` with no `by` argument** (sequential terms): arm
+  alone should still be around p = 0.15, because arm is the first term in the
+  formula and enters first either way.
+- **The shuffle plot is the check for the shuffle plot**: it has its own
+  subtitle reporting how many shuffles beat the real R2. I claim about 4 of
+  20 — if the subtitle says 0 of 20, my "no difference" verdict is weaker
+  than I said.
+
+## Choices made
+
+- Bray-Curtis on compositional shares as the primary distance — alternative not chosen: Jaccard, which throws away abundance and keeps only presence/absence; Tuesday showed the dominance signal is what separates these communities.
+- PERMANOVA (`adonis2`) as the primary test — alternative not chosen: ANOSIM, which only uses ranks of the distances and answers a slightly different question.
+- `by = "margin"` with `rnaseq_batch` in the model — alternative not chosen: testing arm alone; I ran that too (p = 0.15, same verdict), and report both.
+- `betadisper` + `permutest` before trusting PERMANOVA — alternative not chosen: skipping the dispersion check, which would have been unsafe; PERMANOVA cannot tell centre differences from spread differences on its own.
+- Aitchison distance (CLR + Euclidean) as the robustness check — alternative not chosen: trusting one distance metric; I noted the CLR zero handling (add half the smallest nonzero count) rather than picking a different pseudocount.
+- Pre-filtered never-observed species (`min_count = 1, min_samples = 1`) as primary — alternative not chosen: keeping all 220 species; I ran that as a sensitivity (same verdict).
+- Kept the shallow `B006` in the primary analysis — alternative not chosen: dropping it up front; I dropped it in a robustness chunk instead (p = 0.11, same verdict).
+- 999 permutations with `set.seed(2026)` — alternative not chosen: 99 permutations (p-values too coarse) or 9999 (slower, adds nothing).
+- Shuffle-null of 20 shuffles at 99 permutations to picture the null — alternative not chosen: reading the p-value alone without a visual null.
+- Coloured the ordination by `bv`/Nugent to show what a real signal looks like next to arm — alternative not chosen: colouring only by arm, which would have left the 33.8% axis unexplained.
+- Tested the community question on the microbiome table only — alternative not chosen: the same pipeline on the RNAseq table, which answers a different question (gene expression, not community) and belongs in its own document.

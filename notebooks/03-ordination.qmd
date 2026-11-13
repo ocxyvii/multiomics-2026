@@ -64,15 +64,27 @@ ps_genes   <- add_groups(ps_genes)
 
 **1. Our species table is about 89% zeros. Will Bray-Curtis or Jaccard separate the community types more clearly?**
 
-- *Your answer:*
+- 
+ Bray-Curtis is likely to separate the two community types more clearly.
+
+ Why: The two community types are usually defined by which taxa dominate, not just whether a taxon is present. Bray-Curtis uses abundance, so it can
+ capture that one community is dominated by Lactobacillus and another by anaerobes. Jaccard treats every species as “present or absent,” which loses
+ the dominance signal and gets noisy when 89% of values are zero.
 
 **2. Shuffling `outcome` randomly across 471 samples, what R2 would PERMANOVA report?**
 
-- *Your answer:*
+- R² ≈ 0 (essentially zero).
+
+ Why: PERMANOVA measures how much of the total distance variation is explained by the grouping variable. If outcome is shuffled randomly, the group
+ labels have no relationship to the real biology, so they explain almost none of the variation. With finite samples and random noise, you might see a
+ tiny positive number, but it will be very close to 0.
 
 **3. Where will the 438-read sample sit in a Bray-Curtis ordination?**
 
-- *Your answer:*
+-  Near the edge of the plot, likely as an outlier.
+
+ Why: A sample with only 438 reads is very sparse. In a Bray-Curtis ordination, it will look unlike almost every other sample because it shares few
+ taxa with them. Low-read samples usually get pulled away from the main cluster.
 
 ## Part 2 — Ask, look, decide
 
@@ -83,7 +95,12 @@ PCoA with microViz at the species level and colour it by `community`. Put the
 share of variation on each axis title.*
 
 - How many points are on the plot, and how many samples have no `community` value?
-  - *Your answer:*
+  -  471 points on the plot — one per sample.
+ - 0 missing community values — if the setup chunk ran correctly, every sample has its community group.
+
+```{r, fig.cap="Bray-Curtis PCoA coloured by community"}
+knitr::include_graphics(here::here("figures/ordination/community_pcoa.png"))
+```
 
 ### Step 2: three distances, side by side
 
@@ -94,13 +111,24 @@ variation held by the first eight axes.*
 
 *The distance I would publish, and why:*
 
+```{r, fig.cap="Three distances side by side with scree plots"}
+knitr::include_graphics(here::here("figures/ordination/three_distances.png"))
+```
+
 ### Step 3: one plot, many colourings
 
 Ask for the Bray-Curtis ordination as a grid of panels coloured by `outcome`,
 `time_point`, `nugent`, `lacto_fraction` and library size.
 
 - Which colouring lines up with axis 1? Which shows nothing by eye?
-  - *Your answer:*
+  -  lacto_fraction lines up most cleanly with axis 1. nugent lines up too, because it is essentially the inverse of Lactobacillus dominance. community
+ also separates, but less monotonically because the high-lacto group splits into two sub-clusters (likely L. iners–dominated on the left and L.
+ crispatus–dominated on the right).
+ -  time_point shows no clear pattern — the three visit colours are scattered all over the plot.
+
+```{r, fig.cap="Bray-Curtis PCoA coloured by community, outcome, time point, Nugent score, lacto fraction and library size"}
+knitr::include_graphics(here::here("figures/ordination/multi_colour_grid.png"))
+```
 
 ### Step 4: what is axis 1?
 
@@ -109,7 +137,28 @@ ask for the numbers behind it: the correlation of axis 1 with `lacto_fraction`,
 and the five genera that track axis 1 most closely.
 
 - Which parts of Pi's paragraph did the numbers support, and which did they not?
-  - *Your answer:*
+  - Parts the numbers supported
+
+ 1. “The biggest driver is overall Lactobacillus dominance, but that is captured mostly by axis 2, not axis 1.”
+    Supported. Axis 2 correlates with lacto_fraction at r = -0.91, while axis 1 only correlates at r = 0.29. So the strong lacto/BV gradient is indeed
+    on axis 2.
+
+ 2. “Moving down axis 2 means more BV-associated anaerobes.”
+    Supported. Axis 2 correlates with nugent at r = 0.71, and the genera most negatively correlated with axis 2 include Gardnerella, Megasphaera,
+    Prevotella, etc. Higher Nugent score means more BV-type bacteria.
+
+ 3. “Axis 1 is more subtle.”
+    Supported. Axis 1 explains 27.5% of variation, but its correlation with lacto fraction is weak.
+ Parts the numbers did NOT fully support
+
+ 1. “Axis 1 separates the Lactobacillus-dominated samples into two sub-types… L. crispatus–type vs L. iners–type.”
+    Not fully supported. I inferred this from the shape of the plot, but I did not compute species-level correlations to prove it. The genus-level
+    numbers only show that Lactobacillus is positively correlated with axis 1 (r = 0.29) and Gardnerella is negatively correlated (r = -0.35). That
+    tells us axis 1 contrasts some Lactobacillus samples against Gardnerella/BV samples, but it does not prove the specific split into L. crispatus vs
+    L. iners.
+
+ 2. “Axis 1 is the lacto axis.”
+    Not supported. The numbers show axis 1 is only weakly related to lacto fraction. Calling it a lacto axis would be misleading.
 
 ### Step 5: PERMANOVA and a null distribution
 
@@ -118,9 +167,14 @@ Ask for the R2 and p-value of `community`, `outcome`, `time_point` and
 permutations, and plot the 20 R2 values with the real one marked.
 
 - Do the R2 values match the slides (about 17.5%, 8.7%, 0.5%, and nothing for batch)?
-  - *Your answer:*
+  -  Yes, but only when each variable is evaluated marginally in a full model. The order in the slide is community (17.5%), time_point (8.7%), outcome
+ (0.5%), rnaseq_batch (~0%).
 - Where does the real outcome R2 sit among the shuffled ones?
-  - *Your answer:*
+  -  It sits far to the right of all 20 shuffled values. No shuffle produced an R² as large as the real one.
+
+```{r, fig.cap="Outcome PERMANOVA R2: 20 shuffles with the real value marked"}
+knitr::include_graphics(here::here("figures/ordination/shuffled_outcome_permanova.png"))
+```
 
 ### Step 6: argue about the settings
 
@@ -128,7 +182,8 @@ Ask for `by = "margin"` and `by = "terms"` side by side, and why they differ.
 Then ask whether PERMANOVA knows each participant appears three times.
 
 - Explain the answer in your own words:
-  - *Your answer:*
+  -  No. PERMANOVA treats every sample as independent. It does not know that three samples came from the same participant. It has no concept of “repeated
+ measures” or “random effects.”
 
 ### Step 7: the 438-read sample
 
@@ -136,7 +191,12 @@ Ask Pi to label it on the plot, then redraw without the samples you dropped this
 morning, side by side with the original.
 
 - Was your prediction right? Did anything else move?
-  - *Your answer:*
+  -  The 438-read sample is P028_week_18. It sits in the middle of the low-lacto cloud, not at the edge. So my earlier prediction that it would be an outlier was wrong. Bray-Curtis uses relative abundance, so a sample can have very few reads but still match the same community profile as its neighbours.
+ -  After dropping it, the overall cloud looks almost identical. The MDS1 axis changed only slightly (27.5% to 27.6%) and only a few nearby points shifted a little.
+
+```{r, fig.cap="Original (left) with the 438-read sample labelled, and after dropping it (right)"}
+knitr::include_graphics(here::here("figures/ordination/sample_438_comparison.png"))
+```
 
 ### Step 8: polish one figure
 

@@ -1,6 +1,13 @@
 ---
 title: "Module 4 — Differential Testing"
-format: html
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    fig-width: 8
+    fig-height: 6
+    fig-dpi: 150
+    theme: cosmo
 editor: source
 execute:
   warning: false
@@ -38,7 +45,7 @@ metadata <- d$metadata |> left_join(sample_groups, by = "sample_id")
 ```
 
 ```{r}
-count(metadata, time_point, community)
+dplyr::count(metadata, time_point, community)
 ```
 
 # Exercise 1: Test the gene table with a grouping from the species table
@@ -47,64 +54,332 @@ count(metadata, time_point, community)
 
 **1. Testing 13,738 genes, how many get a raw p-value below 0.05 if nothing is truly different?**
 
-- *Your answer:*
+- *Your answer: About 5% of 13,738 ≈ 690 genes by pure chance. A raw p-value below 0.05 means "if this gene were no different, we would see data this extreme less than 5% of the time" — so with thousands of genes tested, hundreds will cross that line even when nothing is real. This is why we use the adjusted p-value (`padj`), which corrects for the number of tests.*
 
 **2. Would you rather have 157 samples at one visit, or 471 across three visits? Why?**
 
-- *Your answer:*
+- *Your answer: For this test, 157 at one visit. The 471 are the same people sampled three times, so they are not independent — the same person's samples are more alike than samples from different people, and DESeq2 assumes independence. Testing all 471 as if they were independent inflates the sample size and gives too many false hits. (Also, the community grouping can change between visits for the same person, which muddies the contrast.)*
 
 **3. Will more significant genes be higher in anaerobe-dominant or Lactobacillus-dominant samples?**
 
-- *Your answer:*
+- *Your answer: My guess is more genes will be higher in the Lactobacillus-dominant (`high_lacto`) samples — a healthy epithelium with an intact barrier expresses barrier and epithelial genes strongly, while disruption of the epithelium might dampen them.*
 
 ## Part 2 — Ask, look, decide
 
 ### Step 1: set up and run the test
 
-Suggested request: *Using `d` and `metadata` from the setup chunk, keep only
-the week 18 samples. Keep genes with a count of at least 10 in at least a
-quarter of those samples. Run DESeq2 on the raw counts with `~ community` and
-the contrast anaerobe against lactobacillus. Add gene symbols and names from
-`d$gene_info`. Save the results table to `data/genes_by_community.csv` with the
-columns `feature` (the Ensembl ID), `baseMean`, `log2FoldChange`, `lfcSE`,
-`stat`, `pvalue`, `padj`, `symbol` and `gene_name`.*
+```{r step-1-setup-run}
+# Keep only the week 18 samples
+meta18 <- metadata |> filter(time_point == "week_18")
+counts18 <- d$genes[, meta18$sample_id, drop = FALSE]
 
-Tomorrow's notebook reads that file.
+# How the 157 week-18 samples split by community
+table(meta18$community)
+
+# Keep genes with a count of at least 10 in at least a quarter of samples
+min_samples <- ceiling(nrow(meta18) / 4)
+keep <- rowSums(counts18 >= 10) >= min_samples
+counts18_filt <- counts18[keep, , drop = FALSE]
+
+nrow(meta18)            # samples tested
+sum(keep)               # genes tested
+```
+
+```{r step-1-check-order}
+# DESeq2 will silently pair columns to rows, so check order by hand
+cols_match <- all(colnames(counts18_filt) == meta18$sample_id)
+cols_match
+
+head(data.frame(
+  column_name = colnames(counts18_filt),
+  sample_id   = meta18$sample_id
+), 5)
+```
+
+```{r step-1-deseq2}
+# Run DESeq2 on the raw gene counts
+dds <- DESeqDataSetFromMatrix(
+  countData = counts18_filt,
+  colData   = meta18,
+  design    = ~ community
+)
+
+dds <- DESeq(dds)
+
+# Contrast: low_lacto (anaerobe-dominant) vs high_lacto (Lactobacillus-dominant)
+# Positive log2FoldChange  -> higher in low_lacto
+# Negative log2FoldChange  -> higher in high_lacto
+res <- results(dds, contrast = c("community", "low_lacto", "high_lacto"))
+
+summary(res)
+```
+
+```{r step-1-save}
+# Add gene symbols and names, then save for tomorrow's notebook
+res_table <- as.data.frame(res) |>
+  rownames_to_column("feature") |>
+  left_join(d$gene_info, by = c("feature" = "ensembl_gene_id")) |>
+  select(feature, baseMean, log2FoldChange, lfcSE, stat,
+         pvalue, padj, symbol, gene_name)
+
+write_csv(res_table, here("data/genes_by_community.csv"))
+```
 
 - Samples in each group (37 and 120)? Genes tested (13,738)?
-  - *Your answer:*
+  - *Yes: 37 `low_lacto`, 120 `high_lacto`, 13,738 genes.*
 - Do the first five count-table columns match the first five `sample_id` values, in order?
-  - *Your answer:*
+  - *Yes; `cols_match` is `TRUE` and the first five names line up exactly.*
 
 ### Step 2: a short report
 
-Suggested request: *Write a summary of the results: how many genes have
-`pvalue` below 0.05, how many have `padj` below 0.05, how many of those change
-more than two-fold, and how many go each way. Then list the top 20 genes by
-`padj` with symbol, name and fold change.*
+```{r step-2-report}
+# Summary counts
+report <- tibble(
+  pvalue_below_05 = sum(res_table$pvalue < 0.05, na.rm = TRUE),
+  padj_below_05   = sum(res_table$padj   < 0.05, na.rm = TRUE),
+  padj_05_and_fc2 = sum(res_table$padj < 0.05 & abs(res_table$log2FoldChange) > 1, na.rm = TRUE),
+  up_in_low_lacto  = sum(res_table$padj < 0.05 & res_table$log2FoldChange > 0, na.rm = TRUE),
+  up_in_high_lacto = sum(res_table$padj < 0.05 & res_table$log2FoldChange < 0, na.rm = TRUE)
+)
+report
+
+# Top 20 genes by adjusted p-value
+res_table |>
+  arrange(padj) |>
+  select(symbol, gene_name, log2FoldChange, padj) |>
+  head(20)
+```
 
 - Do you get 1,815 at `padj` below 0.05 and 303 of those more than two-fold?
-  - *Your answer:*
+  - *Yes.*
 - What do the top 20 genes have in common?
-  - *Your answer:*
+  - *They are all higher in the `high_lacto` group (negative log2FC) and many are epithelial/barrier genes (filaggrin, loricrin, keratins, claudins, small proline-rich proteins).*
 
 ### Step 3: one result, four plots
 
-From here on, write your own requests. Volcano plot, MA plot, raw p-value
-histogram with the no-difference line, boxplots of the top six genes by
-community.
+This section shows the same DESeq2 result four ways. The contrast is **low_lacto (anaerobe-dominant) versus high_lacto (Lactobacillus-dominant)**, so a positive log2 fold change means higher in the anaerobe-dominant group and a negative value means higher in the Lactobacillus-dominant group.
+
+#### Volcano plot
+
+```{r step-3-volcano, fig.width=9, fig.height=6.5, fig.cap="Volcano plot of 13,738 genes tested between low_lacto and high_lacto communities. Points are coloured by significance and fold-change thresholds (padj < 0.05 and |log2FC| > 1). The ten most significant genes are labelled."}
+# Prepare a plotting table with significance class and top-10 labels
+plot_volcano <- res_table |>
+  mutate(
+    status = case_when(
+      padj < 0.05 & log2FoldChange > 1  ~ "higher in low_lacto",
+      padj < 0.05 & log2FoldChange < -1 ~ "higher in high_lacto",
+      TRUE                              ~ "not significant"
+    ),
+    label = if_else(
+      rank(padj, ties.method = "first") <= 10,
+      symbol,
+      NA_character_
+    )
+  )
+
+ggplot(plot_volcano, aes(x = log2FoldChange, y = -log10(pvalue), colour = status)) +
+  geom_point(alpha = 0.35, size = 1.2) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", colour = "grey40") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", colour = "grey40") +
+  geom_text(aes(label = label), colour = "black", size = 3, vjust = -0.7, hjust = 0.5) +
+  scale_colour_manual(values = c(
+    "higher in low_lacto"  = "#D55E00",   # orange-red
+    "higher in high_lacto" = "#0072B2",   # blue
+    "not significant"      = "grey70"
+  )) +
+  labs(
+    x = "log2 fold change (low_lacto vs high_lacto)",
+    y = "-log10(raw p-value)",
+    colour = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 0.5)
+  )
+```
+
+#### MA plot
+
+```{r step-3-ma, fig.width=9, fig.height=6.5, fig.cap="MA plot: log2 fold change against mean expression. Genes with padj < 0.05 and |log2FC| > 1 are highlighted in colour."}
+plot_ma <- res_table |>
+  mutate(
+    status = case_when(
+      padj < 0.05 & log2FoldChange > 1  ~ "higher in low_lacto",
+      padj < 0.05 & log2FoldChange < -1 ~ "higher in high_lacto",
+      TRUE                              ~ "not significant"
+    )
+  )
+
+ggplot(plot_ma, aes(x = baseMean, y = log2FoldChange, colour = status)) +
+  geom_point(alpha = 0.35, size = 1.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  scale_x_log10(labels = scales::label_comma()) +
+  scale_colour_manual(values = c(
+    "higher in low_lacto"  = "#D55E00",
+    "higher in high_lacto" = "#0072B2",
+    "not significant"      = "grey70"
+  )) +
+  labs(
+    x = "mean of normalised counts (log10 scale)",
+    y = "log2 fold change (low_lacto vs high_lacto)",
+    colour = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 0.5)
+  )
+```
+
+#### Raw p-value histogram
+
+```{r step-3-p-hist, fig.width=8, fig.height=5, fig.cap="Histogram of raw p-values. Under the global null hypothesis (no true differences), p-values are uniformly distributed, so the dashed line marks the expected height of each bin if nothing were truly different."}
+expected_per_bin <- sum(!is.na(res_table$pvalue)) / 50
+
+ggplot(res_table, aes(x = pvalue)) +
+  geom_histogram(bins = 50, colour = "white", fill = "#0072B2", alpha = 0.85) +
+  geom_hline(yintercept = expected_per_bin, linetype = "dashed",
+             colour = "#D55E00", linewidth = 0.8) +
+  annotate("text", x = 0.75, y = expected_per_bin * 1.15,
+           label = "expected if no genes differ", colour = "#D55E00", size = 4) +
+  labs(x = "raw p-value", y = "number of genes") +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 0.5)
+  )
+```
+
+#### Boxplots of the top six genes
+
+```{r step-3-boxplots, fig.width=10, fig.height=8, fig.cap="Normalised counts of the six genes with the smallest adjusted p-values, split by community. Points are overlaid on each boxplot."}
+# Normalised counts for the top six genes by adjusted p-value
+top6 <- res_table |>
+  arrange(padj) |>
+  head(6) |>
+  pull(feature)
+
+norm_counts <- counts(dds, normalized = TRUE)[top6, , drop = FALSE] |>
+  as.data.frame() |>
+  rownames_to_column("feature") |>
+  pivot_longer(-feature, names_to = "sample_id", values_to = "norm_count") |>
+  left_join(
+    meta18 |> select(sample_id, community),
+    by = "sample_id"
+  ) |>
+  left_join(
+    d$gene_info |> select(ensembl_gene_id, symbol),
+    by = c("feature" = "ensembl_gene_id")
+  ) |>
+  mutate(
+    community = fct_relevel(community, "high_lacto", "low_lacto"),
+    symbol = fct_reorder(symbol, norm_count, .desc = TRUE)
+  )
+
+ggplot(norm_counts, aes(x = community, y = log2(norm_count + 1), fill = community)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.15, alpha = 0.35, size = 0.8) +
+  facet_wrap(~ symbol, scales = "free_y", ncol = 3) +
+  scale_fill_manual(values = c(
+    "high_lacto" = "#0072B2",
+    "low_lacto"  = "#D55E00"
+  )) +
+  labs(
+    y = "log2(normalised count + 1)",
+    x = NULL,
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 0.5),
+    strip.text = element_text(face = "bold")
+  )
+```
 
 - Pi's explanation of the sign convention:
-  - *Your answer:*
+  - *A positive log2 fold change means the gene is higher in the first group named in the contrast (`low_lacto`, the anaerobe-dominant community); a negative value means it is higher in the second group (`high_lacto`, the Lactobacillus-dominant community).*
 - Does every boxplot agree with the sign of its fold change?
-  - *Your answer:*
+  - *Yes. The top six genes all have negative log2FC, and their normalised counts are visibly higher in the `high_lacto` boxplots.*
 
 ### Step 4: cutoffs are choices
 
-Genes passing at `padj` 0.01, 0.05, 0.1 crossed with fold change 0, 1.5, 2, 4.
-Then the test with a looser (10%) and a stricter (50%) gene filter.
+Two knobs decide how many genes we report: the **adjusted p-value cutoff** (how confident we are that a gene changes at all) and the **fold-change cutoff** (how big the change must be). They are independent choices, and this section tests them side by side. The fold-change cutoffs are on the log2 scale, so 0 means "any change", 1.5 means a ~2.8-fold change, 2 means a 4-fold change, and 4 means a 16-fold change.
+
+#### Cutoff grid: adjusted p-value crossed with fold change
+
+```{r step-4-grid}
+# The original result: padj < 0.05 and |log2FC| > 1 gives 1,815... let us look
+# at the whole grid instead.
+padj_cutoffs <- c(0.01, 0.05, 0.10)
+lfc_cutoffs  <- c(0, 1.5, 2, 4)
+
+grid <- expand_grid(padj = padj_cutoffs, lfc = lfc_cutoffs) |>
+  rowwise() |>
+  mutate(
+    n_genes         = sum(res_table$padj < padj & abs(res_table$log2FoldChange) > lfc, na.rm = TRUE),
+    up_in_low_lacto = sum(res_table$padj < padj & res_table$log2FoldChange > lfc, na.rm = TRUE),
+    up_in_high_lacto = sum(res_table$padj < padj & res_table$log2FoldChange < -lfc, na.rm = TRUE)
+  ) |>
+  ungroup()
+
+# Present as a readable table: one row per padj cutoff, one column per fold change
+cutoff_table <- grid |>
+  select(padj, lfc, n_genes) |>
+  mutate(lfc = paste0("|log2FC| > ", lfc)) |>
+  pivot_wider(names_from = lfc, values_from = n_genes)
+
+cutoff_table
+```
+
+#### Filter sensitivity: how strict should the gene filter be?
+
+The main test kept genes with a count of at least 10 in at least 25% of samples. Here the same DESeq2 run is repeated with a looser (10%) and a stricter (50%) filter, to see how much the choice changes the result.
+
+```{r step-4-filters}
+# Same test, three gene filters
+run_with_filter <- function(min_frac) {
+  min_samples <- ceiling(nrow(meta18) * min_frac)
+  keep <- rowSums(counts18 >= 10) >= min_samples
+  counts_f <- counts18[keep, , drop = FALSE]
+  dds_f <- DESeqDataSetFromMatrix(counts_f, meta18, ~ community)
+  dds_f <- DESeq(dds_f)
+  results(dds_f, contrast = c("community", "low_lacto", "high_lacto")) |>
+    as.data.frame()
+}
+
+res_loose   <- run_with_filter(0.10)
+res_default <- run_with_filter(0.25)   # this is the main result, rerun for comparison
+res_strict  <- run_with_filter(0.50)
+
+res_list <- list(res_loose, res_default, res_strict)
+filter_comparison <- data.frame(
+  filter            = c("10% of samples (loose)", "25% of samples (ours)", "50% of samples (strict)"),
+  min_samples       = sapply(c(0.10, 0.25, 0.50), function(f) ceiling(nrow(meta18) * f)),
+  genes_tested      = sapply(res_list, nrow),
+  significant       = sapply(res_list, function(r) sum(r$padj < 0.05, na.rm = TRUE)),
+  significant_fc2   = sapply(res_list, function(r) sum(r$padj < 0.05 & abs(r$log2FoldChange) > 1, na.rm = TRUE))
+)
+filter_comparison
+
+# How much do the loose and strict choices agree, gene by gene?
+sig_loose  <- rownames(res_loose)[which(res_loose$padj < 0.05)]
+sig_strict <- rownames(res_strict)[which(res_strict$padj < 0.05)]
+tibble(
+  statement = "genes significant in BOTH the loose and the strict run",
+  n = length(intersect(sig_loose, sig_strict))
+)
+```
 
 *The cutoffs I would report, and why:*
+
+- *I would report **`padj` < 0.05 with `|log2FC|` > 1.5** — 118 genes. At `padj` 0.05 alone there are 1,815 hits, but loosening the fold change to zero barely changes the count (1,149 at `padj` 0.01), which shows most "hits" are small changes of dubious biological meaning. Tightening to a 4-fold change leaves only 3 genes — too few to be a useful list. 1.5 is the middle ground: a clear, defensible effect size.*
+- *For the gene filter, the 25% choice barely matters: the loose and strict runs agree on 1,725 of 1,862 significant genes (93%). The filter changes which low-abundance genes get tested, not the biology of the result. I would keep 25% and say so in the methods.*
 
 ### Step 5: argue with it
 
@@ -130,45 +405,144 @@ tomorrow's notebook reads.
 
 **1. Why can you not test the species table with the `community` column you built from it?**
 
-- *Your answer:*
+- *Your answer: The `community` column is derived from the species table itself (the Lactobacillus fraction, split at 0.5). Testing species by `community` would be circular — a "significant" difference would only re-discover the rule used to build the group, not anything new.*
 
 **2. How many of the 220 species survive "present in at least 10% of samples"? How many of those are present in all 157 samples?**
 
-- *Your answer:*
+- *Your answer: 53 survive the 10% prevalence filter. Only 1 is present in all 157 samples: Lactobacillus iners.*
 
 **3. If any species are significant, will they be higher in preterm or in term?**
 
-- *Your answer:*
+- *My guess: the BV-associated anaerobes (Gardnerella, Prevotella, Sneathia, Megasphaera) — the usual suspects in preterm-birth studies — will be higher in preterm.*
 
 ## Part 2 — Ask, look, decide
 
 ### Step 1: the default run
 
-Suggested request: *Using `d` and `metadata` from the setup chunk, keep the
-week 18 samples and the species present in at least 10% of them. Run DESeq2 on
-the raw counts with `~ outcome` and the contrast preterm against term, with the
-default settings. Add `Genus` and `Family` from `d$taxonomy`, and list the
-significant species with their fold changes.*
+The contrast is **preterm against term**, so a positive log2 fold change means the species is higher in preterm samples.
+
+```{r ex2-step1-default}
+# Keep week 18 samples and species present in at least 10% of them
+meta18 <- metadata |> filter(time_point == "week_18")
+sp18 <- d$species[, meta18$sample_id, drop = FALSE]
+
+keep_sp <- rowSums(sp18 > 0) >= 0.10 * ncol(sp18)
+sp18_f <- sp18[keep_sp, , drop = FALSE]
+
+nrow(sp18_f)   # species tested
+
+# DESeq2 on the raw species counts, default settings
+dds_sp <- DESeqDataSetFromMatrix(sp18_f, meta18, ~ outcome)
+dds_sp <- DESeq(dds_sp)
+res_sp <- results(dds_sp, contrast = c("outcome", "preterm", "term"))
+
+# Add Genus and Family
+res_sp_table <- as.data.frame(res_sp) |>
+  rownames_to_column("feature") |>
+  left_join(d$taxonomy, by = c("feature" = "taxon"))
+
+res_sp_table |>
+  filter(padj < 0.05) |>
+  arrange(padj) |>
+  select(feature, Genus, Family, log2FoldChange, padj)
+```
 
 - Species tested (53) and significant (19)? Do the names look like what you would expect?
-  - *Your answer:*
+  - *Yes: 53 tested, 19 significant. The names are exactly the usual suspects — Gardnerella, Prevotella, Sneathia, Megasphaera, BVAB2, Fannyhessea — almost all BV-associated anaerobes. 18 of 19 are higher in preterm; the exception is Corynebacterium tuberculostearicum (higher in term).*
 
 ### Step 2: look behind it
 
-Which species have no zero in any sample? Size factor against *L. iners* share,
-and against library size, both on log scales.
+```{r ex2-step2-zeros}
+# Which tested species have no zero in any sample?
+no_zero <- rownames(sp18_f)[rowSums(sp18_f > 0) == ncol(sp18_f)]
+no_zero
+```
+
+```{r ex2-step2-sizefactors, fig.width=9, fig.height=4, fig.cap="DESeq2 size factors against L. iners share (left) and library size (right), both on log scales. The size factors track composition, not sequencing depth."}
+library(patchwork)   # for p1 + p2 side by side
+
+sf <- tibble(
+  sample_id    = names(sizeFactors(dds_sp)),
+  size_factor  = unname(sizeFactors(dds_sp)),
+  library_size = colSums(sp18_f)[names(sizeFactors(dds_sp))]
+) |>
+  left_join(meta18 |> select(sample_id, community), by = "sample_id") |>
+  mutate(
+    iners_share = unname(sp18_f["lactobacillus_iners", sample_id] / library_size)
+  )
+
+p1 <- ggplot(sf, aes(x = iners_share, y = size_factor)) +
+  geom_point(aes(colour = community), alpha = 0.7) +
+  scale_x_log10() + scale_y_log10() +
+  labs(x = "L. iners share of library", y = "DESeq2 size factor",
+       title = "Size factor vs L. iners share") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", legend.title = element_blank())
+
+p2 <- ggplot(sf, aes(x = library_size, y = size_factor)) +
+  geom_point(aes(colour = community), alpha = 0.7) +
+  scale_x_log10() + scale_y_log10() +
+  labs(x = "library size (reads)", y = NULL,
+       title = "Size factor vs library size") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
+
+p1 + p2
+
+# The numbers behind the pictures
+tibble(
+  comparison = c("log-log correlation: size factor vs L. iners share",
+                 "log-log correlation: size factor vs library size"),
+  r = c(cor(log(sf$size_factor), log(sf$iners_share)),
+        cor(log(sf$size_factor), log(sf$library_size)))
+)
+```
 
 - What are the size factors measuring?
-  - *Your answer:*
+  - *Composition, not sequencing depth. Only L. iners has a count in every sample, so it anchors the geometric-mean size factor estimate: samples where L. iners dominates get large size factors. The correlation with L. iners share is 0.93; with library size only 0.44. DESeq2 is effectively "normalising away" the community signal — the exact thing we want to test.*
 
 ### Step 3: alternatives side by side
 
-Rerun with `type = "poscounts"` size factors and compare the two runs in one
-table. Save the poscounts version to `data/species_by_outcome.csv` with columns
-`feature`, `baseMean`, `log2FoldChange`, `lfcSE`, `stat`, `pvalue`, `padj`,
-`Genus` and `Family`.
+```{r ex2-step3-poscounts}
+# Same test, but size factors from poscounts (zeros handled with pseudo-counts)
+dds_pos <- DESeqDataSetFromMatrix(sp18_f, meta18, ~ outcome)
+dds_pos <- estimateSizeFactors(dds_pos, type = "poscounts")
+dds_pos <- DESeq(dds_pos)
+res_pos <- results(dds_pos, contrast = c("outcome", "preterm", "term"))
+res_pos_table <- as.data.frame(res_pos) |> rownames_to_column("feature")
+
+# Side-by-side comparison of the two runs
+side_by_side <- res_sp_table |>
+  select(feature, Genus, default_padj = padj, default_lfc = log2FoldChange) |>
+  left_join(
+    res_pos_table |>
+      select(feature, poscounts_padj = padj, poscounts_lfc = log2FoldChange),
+    by = "feature"
+  )
+
+tibble(
+  run = c("default", "poscounts"),
+  significant = c(sum(side_by_side$default_padj < 0.05, na.rm = TRUE),
+                  sum(side_by_side$poscounts_padj < 0.05, na.rm = TRUE))
+)
+
+# The 19 default hits, re-judged under poscounts
+side_by_side |>
+  filter(default_padj < 0.05) |>
+  arrange(default_padj) |>
+  select(feature, Genus, default_padj, poscounts_padj,
+         default_lfc, poscounts_lfc)
+
+# Save the poscounts version for tomorrow's notebook
+species_out <- res_pos_table |>
+  left_join(d$taxonomy, by = c("feature" = "taxon")) |>
+  select(feature, baseMean, log2FoldChange, lfcSE, stat, pvalue, padj, Genus, Family)
+write_csv(species_out, here("data/species_by_outcome.csv"))
+```
 
 *Why the first list, which looked right, was not:*
+
+- *Under poscounts size factors the significant count drops from 19 to 0, and every fold change shrinks from log2 ~2–5 to log2 ~0–1. The default run's "19 preterm species" was an artefact of normalisation: the size factors tracked L. iners share (r = 0.93), so DESeq2 subtracted the community signal from the counts, and the test then re-detected that same signal as an outcome difference. The poscounts version, which is less dominated by the single all-present species, finds no species with a real outcome signal. A list that looks biologically plausible is not the same as a list that survives a change of normalisation.*
 
 ### Step 4: many views of a null result
 
@@ -182,13 +556,46 @@ as presence in each group, and across all three visits.
 
 ### Step 5: the gene table against outcome
 
-The `~ outcome` test on genes, saved to `data/genes_by_outcome.csv`. Then one
-table comparing all three tests, and the two gene volcano plots side by side.
+```{r ex2-step5-genes}
+# Same pipeline as Exercise 1, but the design is ~ outcome
+keep_g <- rowSums(d$genes[, meta18$sample_id] >= 10) >= ceiling(nrow(meta18) / 4)
+genes18_f <- d$genes[keep_g, meta18$sample_id, drop = FALSE]
+
+dds_g <- DESeqDataSetFromMatrix(genes18_f, meta18, ~ outcome)
+dds_g <- DESeq(dds_g)
+res_g <- results(dds_g, contrast = c("outcome", "preterm", "term"))
+
+res_g_table <- as.data.frame(res_g) |>
+  rownames_to_column("feature") |>
+  left_join(d$gene_info, by = c("feature" = "ensembl_gene_id")) |>
+  select(feature, baseMean, log2FoldChange, lfcSE, stat, pvalue, padj, symbol, gene_name)
+
+# Save for tomorrow's notebook
+write_csv(res_g_table, here("data/genes_by_outcome.csv"))
+
+# One table comparing all three tests
+res_comm <- read_csv(here("data/genes_by_community.csv"), show_col_types = FALSE)
+
+tibble(
+  test = c("genes ~ community (low_lacto vs high_lacto)",
+           "species ~ outcome (preterm vs term, poscounts)",
+           "genes ~ outcome (preterm vs term)"),
+  features_tested = c(nrow(res_comm), nrow(species_out), nrow(res_g_table)),
+  significant = c(sum(res_comm$padj < 0.05, na.rm = TRUE),
+                  sum(species_out$padj < 0.05, na.rm = TRUE),
+                  sum(res_g_table$padj < 0.05, na.rm = TRUE)),
+  change_gt_2fold = c(sum(res_comm$padj < 0.05 & abs(res_comm$log2FoldChange) > 1, na.rm = TRUE),
+                      sum(species_out$padj < 0.05 & abs(species_out$log2FoldChange) > 1, na.rm = TRUE),
+                      sum(res_g_table$padj < 0.05 & abs(res_g_table$log2FoldChange) > 1, na.rm = TRUE))
+)
+```
 
 - Do you get 1,698 significant, and 50 more than two-fold?
-  - *Your answer:*
+  - *Yes.*
 
 *What the comparison tells me about where the outcome signal lives:*
+
+- *The outcome signal in this dataset is weak in the species table (0 species after honest normalisation) and modest in the gene table (1,698 genes, but only 50 with a more-than-two-fold change, and no single gene below padj 0.0002 — compare 8e-19 in the community test). The strongest signal by far is community composition, not birth outcome. Where an outcome signal does exist in the genes, it is diffuse: many small shifts rather than a few large ones.*
 
 ### Step 6: argue with it
 

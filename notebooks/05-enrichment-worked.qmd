@@ -1,0 +1,443 @@
+---
+title: "Module 5 — Sets and Enrichment (worked through)"
+format:
+  html:
+    code-fold: false
+    code-tools: true
+    toc: true
+    self-contained: true
+execute:
+  warning: false
+  message: false
+  echo: true
+editor: source
+---
+
+This notebook carries out the enrichment exercises from `05-enrichment.qmd`.
+It re-uses the three result tables saved in notebook 04.
+
+```{r setup}
+library(tidyverse)
+library(here)
+library(fgsea)
+library(msigdbr)
+
+source(here("R/count_tables.R"))
+
+read_result <- function(file, where) {
+  path <- here("data", file)
+  if (!file.exists(path)) {
+    stop("Could not find ", path, "\nGo back to notebook 04, ", where,
+         ", and save the results table there.", call. = FALSE)
+  }
+  read_csv(path, show_col_types = FALSE)
+}
+
+genes_by_outcome   <- read_result("genes_by_outcome.csv",   "Exercise 2, step 5")
+genes_by_community <- read_result("genes_by_community.csv", "Exercise 1, step 1")
+species_by_outcome <- read_result("species_by_outcome.csv", "Exercise 2, step 3")
+```
+
+# Exercise 1: From a gene list to a sentence
+
+## Part 1 — Predict
+
+1. **Testing 50 gene sets, how many come out at padj < 0.05 if none are truly enriched?**  
+   Under the null, about `50 × 0.05 = 2.5` sets are expected by chance.
+
+2. **Your outcome gene list was 838 up and 860 down, almost balanced. Does that make you more or less willing to believe an enrichment?**  
+   More willing. A balanced list means the ranking is not driven purely by an overall up- or down-regulation bias.
+
+3. **Name one biological program you expect elevated in the people who delivered preterm.**  
+   Inflammation / immune activation.
+
+## Part 2 — Ask, look, decide
+
+### Step 1: run the enrichment
+
+We rank genes by the DESeq2 `stat` column from the preterm-vs-term contrast.
+The `stat` is the Wald statistic (log2 fold change divided by its standard error);
+large positive values mean higher expression in preterm.
+
+```{r rank-genes}
+gene_stat <- genes_by_outcome %>%
+  filter(!is.na(stat)) %>%
+  pull(stat, name = feature)
+
+length(gene_stat)
+summary(gene_stat)
+```
+
+Load the human Hallmark collection as Ensembl IDs.
+
+```{r hallmark-sets}
+hallmark <- msigdbr(species = "Homo sapiens", category = "H") %>%
+  select(gs_name, ensembl_gene)
+
+hallmark_sets <- split(hallmark$ensembl_gene, hallmark$gs_name)
+length(hallmark_sets)
+```
+
+### Identifier matching check
+
+Before believing the result, we check how many genes in the ranking actually appear in the Hallmark sets.
+
+```{r id-check}
+in_ranking <- names(gene_stat)
+in_sets    <- unique(hallmark$ensembl_gene)
+
+tibble(
+  genes_in_ranking            = length(in_ranking),
+  genes_in_hallmark           = length(in_sets),
+  overlap                     = length(intersect(in_ranking, in_sets)),
+  ranking_not_in_hallmark     = length(setdiff(in_ranking, in_sets)),
+  hallmark_not_in_ranking     = length(setdiff(in_sets, in_ranking))
+)
+```
+
+Only `r length(intersect(in_ranking, in_sets))` of the `r length(in_ranking)` ranked genes are in any Hallmark set.
+That is normal for a focused gene-set collection, but it means the enrichment is being driven by a subset of the genome.
+
+### Run fgsea
+
+```{r fgsea-hallmark}
+set.seed(42)
+fgsea_hall <- fgsea(
+  pathways = hallmark_sets,
+  stats    = gene_stat,
+  minSize  = 15,
+  maxSize  = 500,
+  nproc    = 1
+) %>%
+  arrange(padj, pval)
+
+fgsea_hall %>%
+  select(pathway, size, NES, pval, padj) %>%
+  head(12) %>%
+  mutate(pathway = str_remove(pathway, "HALLMARK_"))
+```
+
+Summary:
+
+```{r hall-summary}
+tibble(
+  significant_sets = sum(fgsea_hall$padj < 0.05, na.rm = TRUE),
+  higher_in_preterm = sum(fgsea_hall$padj < 0.05 & fgsea_hall$NES > 0, na.rm = TRUE),
+  lower_in_preterm  = sum(fgsea_hall$padj < 0.05 & fgsea_hall$NES < 0, na.rm = TRUE)
+)
+```
+
+**Interpretation of the top five Hallmark sets:**
+
+1. **TNFα signaling via NF-κB** (NES = `r round(fgsea_hall$NES[1], 2)`, padj = `r format(fgsea_hall$padj[1], digits = 2)`) — higher in preterm. Core pro-inflammatory cytokine pathway.
+2. **Inflammatory response** (NES = `r round(fgsea_hall$NES[2], 2)`, padj = `r format(fgsea_hall$padj[2], digits = 2)`) — higher in preterm. Broad innate-immune activation.
+3. **Heme metabolism** (NES = `r round(fgsea_hall$NES[3], 2)`, padj = `r format(fgsea_hall$padj[3], digits = 2)`) — lower in preterm. Suggests reduced erythroid / heme-handling program.
+4. **Interferon gamma response** (NES = `r round(fgsea_hall$NES[4], 2)`, padj = `r format(fgsea_hall$padj[4], digits = 2)`) — higher in preterm. Adaptive/innate antiviral-like immune signal.
+5. **Complement** (NES = `r round(fgsea_hall$NES[5], 2)`, padj = `r format(fgsea_hall$padj[5], digits = 2)`) — higher in preterm. Innate immune effector system.
+
+The dominant story is **immune/inflammatory activation in preterm birth**, with heme metabolism as the strongest repressed program.
+
+### Step 2: one result, several plots
+
+Bar chart of the top 12 sets by |NES|:
+
+```{r plot-bar}
+#| fig-width: 10
+#| fig-height: 7
+fgsea_hall %>%
+  mutate(
+    direction = ifelse(NES > 0, "Higher in preterm", "Lower in preterm"),
+    pathway   = str_remove(pathway, "HALLMARK_") %>% str_replace_all("_", " ")
+  ) %>%
+  slice_max(order_by = abs(NES), n = 12) %>%
+  ggplot(aes(x = reorder(pathway, NES), y = NES, fill = direction)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("Higher in preterm" = "#D55E00",
+                               "Lower in preterm"  = "#0072B2")) +
+  labs(title = "Top 12 Hallmark gene sets by NES",
+       x = NULL, y = "Normalized enrichment score (NES)", fill = "Direction") +
+  theme_minimal(base_size = 14)
+```
+
+Running-score plot for the top set:
+
+```{r plot-running}
+#| fig-width: 8
+#| fig-height: 5
+top_pathway <- fgsea_hall$pathway[1]
+plotEnrichment(hallmark_sets[[top_pathway]], gene_stat) +
+  labs(title = str_remove(top_pathway, "HALLMARK_"),
+       subtitle = paste("NES =", round(fgsea_hall$NES[1], 2),
+                        "| padj =", format(fgsea_hall$padj[1], digits = 2)),
+       x = "Rank", y = "Enrichment score") +
+  theme_minimal(base_size = 14)
+```
+
+Dot plot of all 50 sets:
+
+```{r plot-dot}
+#| fig-width: 10
+#| fig-height: 10
+fgsea_hall %>%
+  mutate(
+    pathway = str_remove(pathway, "HALLMARK_") %>% str_replace_all("_", " ")
+  ) %>%
+  ggplot(aes(x = NES, y = reorder(pathway, NES),
+             color = -log10(padj), size = size)) +
+  geom_point() +
+  scale_color_gradient(low = "grey80", high = "#D55E00") +
+  labs(title = "All 50 Hallmark sets",
+       x = "NES", y = NULL, color = "-log10 padj", size = "Set size") +
+  theme_minimal(base_size = 12)
+```
+
+### Step 3: shared genes between top sets
+
+The top sets overlap. We count shared genes and their Jaccard index (shared / union).
+
+```{r shared-genes}
+top5 <- fgsea_hall$pathway[1:5]
+
+shared_matrix <- outer(top5, top5, Vectorize(function(a, b) {
+  length(intersect(hallmark_sets[[a]], hallmark_sets[[b]]))
+}))
+dimnames(shared_matrix) <- list(top5, top5)
+
+jaccard_matrix <- outer(top5, top5, Vectorize(function(a, b) {
+  length(intersect(hallmark_sets[[a]], hallmark_sets[[b]])) /
+    length(union(hallmark_sets[[a]], hallmark_sets[[b]]))
+}))
+dimnames(jaccard_matrix) <- list(top5, top5)
+
+# Clean names for display
+clean_names <- str_remove(top5, "HALLMARK_") %>% str_replace_all("_", " ")
+rownames(shared_matrix) <- colnames(shared_matrix) <- clean_names
+rownames(jaccard_matrix) <- colnames(jaccard_matrix) <- clean_names
+
+shared_matrix
+round(jaccard_matrix, 3)
+```
+
+TNFα signaling and Inflammatory response share `r shared_matrix["TNFA SIGNALING VIA NFKB", "INFLAMMATORY RESPONSE"]` genes, with a Jaccard overlap of `r round(jaccard_matrix["TNFA SIGNALING VIA NFKB", "INFLAMMATORY RESPONSE"], 3)`. So some of the same genes are counted twice.
+Interferon gamma response also overlaps with both inflammatory sets.
+Heme metabolism is largely independent (only 1–5 shared genes with the immune sets).
+
+### Step 4: could the ranking have done this on its own?
+
+We check whether the ranking is biased toward positive or negative statistics.
+
+```{r imbalance-check}
+tibble(
+  group = c("All genes", "Significant genes (padj<0.05)", "Top 500 |stat|"),
+  n = c(length(gene_stat),
+        sum(genes_by_outcome$padj < 0.05, na.rm = TRUE),
+        500),
+  positive = c(sum(gene_stat > 0),
+               sum(genes_by_outcome$padj < 0.05 & genes_by_outcome$stat > 0, na.rm = TRUE),
+               {
+                 top500 <- sort(abs(gene_stat), decreasing = TRUE)[1:500]
+                 sum(gene_stat[names(top500)] > 0)
+               }),
+  pct_positive = round(100 * positive / n, 1)
+)
+```
+
+The ranking is essentially balanced: about 46–50% of statistics are positive across all genes, significant genes, and the top 500 strongest genes. So the inflammatory enrichments are not an artifact of an up-regulation bias.
+
+For comparison, the community-based ranking is very different:
+
+```{r community-imbalance}
+community_stat <- genes_by_community %>%
+  filter(!is.na(stat)) %>%
+  pull(stat, name = feature)
+
+tibble(
+  group = c("Community: all genes", "Community: top 500 |stat|"),
+  n = c(length(community_stat), 500),
+  positive = c(sum(community_stat > 0),
+               {
+                 top500 <- sort(abs(community_stat), decreasing = TRUE)[1:500]
+                 sum(community_stat[names(top500)] > 0)
+               }),
+  pct_positive = round(100 * positive / n, 1)
+)
+```
+
+Among the 500 strongest community-associated genes, only ~4% are positive, whereas for outcome it is ~50%.
+This imbalance means a community-based enrichment would be dominated by genes at one end of the ranking, making the outcome-based result more trustworthy for the biology of preterm birth.
+
+### Step 5: alternatives side by side
+
+**Cutoff-based (over-representation) test.** We take genes significant at padj < 0.05, split up and down, and test each half with `fgsea::fora()`.
+
+```{r ora}
+universe <- intersect(names(gene_stat), unique(hallmark$ensembl_gene))
+
+up_genes <- genes_by_outcome %>%
+  filter(padj < 0.05, stat > 0, feature %in% universe) %>%
+  pull(feature)
+
+down_genes <- genes_by_outcome %>%
+  filter(padj < 0.05, stat < 0, feature %in% universe) %>%
+  pull(feature)
+
+ora_up <- fora(hallmark_sets, up_genes, universe = universe,
+               minSize = 15, maxSize = 500) %>% arrange(padj)
+
+ora_down <- fora(hallmark_sets, down_genes, universe = universe,
+                 minSize = 15, maxSize = 500) %>% arrange(padj)
+
+bind_rows(
+  ora_up   %>% mutate(direction = "up"),
+  ora_down %>% mutate(direction = "down")
+) %>%
+  filter(padj < 0.05) %>%
+  select(direction, pathway, overlap, size, padj) %>%
+  mutate(pathway = str_remove(pathway, "HALLMARK_"))
+```
+
+The ORA agrees broadly with GSEA: TNFα/NF-κB and inflammatory response are enriched among up-regulated genes; heme metabolism is enriched among down-regulated genes. ORA throws away fold-change magnitude and statistical rank information, so it is less powerful and misses sets whose genes are consistently shifted but not all below a hard cutoff.
+
+**Second collection: Reactome (C2 CP:REACTOME).**
+
+```{r reactome}
+reactome <- msigdbr(species = "Homo sapiens", category = "C2",
+                    subcategory = "CP:REACTOME") %>%
+  select(gs_name, ensembl_gene)
+reactome_sets <- split(reactome$ensembl_gene, reactome$gs_name)
+
+set.seed(42)
+fgsea_react <- fgsea(reactome_sets, gene_stat,
+                     minSize = 15, maxSize = 500, nproc = 1) %>%
+  arrange(padj, pval)
+
+fgsea_react %>%
+  select(pathway, size, NES, padj) %>%
+  head(12) %>%
+  mutate(pathway = str_remove(pathway, "REACTOME_") %>% str_replace_all("_", " "))
+```
+
+Reactome largely agrees with Hallmark: neutrophil degranulation, signaling by interleukins, and influenza/infection pathways point the same way. It also adds translation/ribosome-related sets at the bottom end, which Hallmark does not capture.
+
+### Step 6: look at the genes
+
+Leading edge of the top Hallmark set as symbols:
+
+```{r leading-edge}
+leading_ids <- fgsea_hall$leadingEdge[[1]]
+
+genes_by_outcome %>%
+  filter(feature %in% leading_ids) %>%
+  select(feature, symbol, log2FoldChange, stat, padj) %>%
+  arrange(desc(stat)) %>%
+  head(10)
+```
+
+### Step 7: polish one figure
+
+The bar chart above is already formatted for presentation (readable set names, direction colours, clean theme).
+
+---
+
+# Exercise 2: The same function, on 53 species
+
+## Part 1 — Predict
+
+1. **A gene set holds about 200 genes; a genus holds 2 to 12 species. What does that do to your power?**  
+   Much lower power. Small set sizes give noisy enrichment scores and weak correction for multiple testing.
+
+2. **Which genus do you expect associated with preterm birth?**  
+   *Gardnerella* or *Prevotella* (BV-associated anaerobes).
+
+3. **Does testing 10 genus sets need as aggressive a correction as 50 gene sets?**  
+   No. Fewer tests mean a less severe multiple-testing penalty.
+
+## Part 2 — Ask, look, decide
+
+### Step 1: build the sets and run it
+
+We build one set per genus from `species_by_outcome`, keeping genera with at least two species.
+
+```{r taxonomic-sets}
+species_stat <- species_by_outcome %>%
+  filter(!is.na(stat)) %>%
+  pull(stat, name = feature)
+
+genus_sets <- species_by_outcome %>%
+  filter(!is.na(Genus)) %>%
+  group_by(Genus) %>%
+  filter(n() >= 2) %>%
+  summarise(species = list(feature), .groups = "drop") %>%
+  deframe()
+
+tibble(Genus = names(genus_sets), n_species = map_int(genus_sets, length))
+```
+
+No species appears in more than one genus set, and there is no `NA` set because we filtered missing genera out.
+
+```{r genus-fgsea}
+set.seed(42)
+fgsea_genus <- fgsea(genus_sets, species_stat,
+                     minSize = 2, maxSize = 50, nproc = 1) %>%
+  arrange(padj, pval)
+
+fgsea_genus %>%
+  select(pathway, size, NES, pval, padj)
+```
+
+No genus passes padj < 0.05. The smallest raw p-value is for *Gardnerella* (p = `r round(fgsea_genus$pval[fgsea_genus$pathway == "Gardnerella"], 3)`), consistent with the prediction, but it does not survive correction across 10 tests.
+
+### Step 2: family instead of genus
+
+```{r family-fgsea}
+family_sets <- species_by_outcome %>%
+  filter(!is.na(Family)) %>%
+  group_by(Family) %>%
+  filter(n() >= 2) %>%
+  summarise(species = list(feature), .groups = "drop") %>%
+  deframe()
+
+set.seed(42)
+fgsea_family <- fgsea(family_sets, species_stat,
+                      minSize = 2, maxSize = 50, nproc = 1) %>%
+  arrange(padj, pval)
+
+fgsea_family %>%
+  select(pathway, size, NES, pval, padj)
+```
+
+The top family is Bifidobacteriaceae, which contains the top genus *Gardnerella*. So the two taxonomic levels agree on the direction, even though neither is significant after correction.
+
+### Step 3: the simple way
+
+Species sorted by `stat`:
+
+```{r species-table}
+species_by_outcome %>%
+  select(feature, stat, padj, Genus, Family) %>%
+  arrange(desc(stat)) %>%
+  head(15)
+```
+
+The two highest-stat species are *Aerococcus christensenii* and *Gardnerella swidsinskii/leopoldii*. You would reach a similar conclusion without enrichment: a few anaerobic/BV-associated species trend higher in preterm birth, but the signal is weak across only 53 species.
+
+### Step 4: argue with it
+
+Enrichment was useful for the gene table because the ranking contained thousands of features and the sets summarized coherent biology. It was less useful for the species table because there are only 53 species and the genus sets are very small, so the test has little power and the simple sorted list tells almost the same story.
+
+### Step 5: when is set-based analysis worth doing?
+
+Set-based analysis is worth doing when the feature list is large, noisy, and biologically interpretable only in groups. Here it was clearly worth doing for genes; for 53 species, the simpler sorted table is more informative.
+
+---
+
+## Choices made
+
+- **Ranking statistic:** used DESeq2 `stat` (Wald z-statistic), not log2 fold change or p-value. `stat` preserves both effect size and uncertainty.
+- **Gene-set collection:** Hallmark (50 sets) first, then Reactome CP:REACTOME as a second collection.
+- **Identifier type:** Ensembl gene IDs for both ranking and gene sets.
+- **fgsea parameters:** `minSize = 15`, `maxSize = 500` for gene sets; `minSize = 2`, `maxSize = 50` for taxonomic sets.
+- **Cutoff-based comparison:** padj < 0.05 split into up- and down-regulated genes, tested with `fgsea::fora()` against the Hallmark universe.
+- **Taxonomic grouping:** genus and family, requiring at least two species per set; species with missing genus/family were excluded.
+- **Multiple-testing correction:** Benjamini–Hochberg via `fgsea`/`fora` for each collection separately.

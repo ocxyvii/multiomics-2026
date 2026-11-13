@@ -1,0 +1,249 @@
+---
+title: "Study B: quality check before analysis"
+format: html
+---
+
+Before we ask Study B (the contraception cohort) any biological question, we
+check the data itself. If a sample is mislabelled or a count file is broken,
+every later result inherits the mistake silently, so we spend one report on
+this first.
+
+Each of the checks below is small on purpose: load, ask one question, print
+`PASS` or `FLAG`. Nothing here drops samples or edits data — we only decide
+what to *watch out for* when the analysis documents come.
+
+```{r}
+#| label: setup
+#| message: false
+# The workshop helper: reads all six Study B files and puts them in one list.
+source(here::here("R/count_tables.R"))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(ggplot2))
+
+d <- read_counts("group_b")   # one item per file, plus $path
+
+# A tiny helper: prints PASS or FLAG so every check is easy to skim.
+check <- function(ok, what) {
+  cat(if (isTRUE(all(ok))) "PASS " else "FLAG ", what, "\n", sep = "")
+}
+```
+
+## 1. What the study looks like
+
+The metadata file (`01_metadata.csv`) has one row per sample. Let's see how
+many people there are, which arm they are in, and whether the two sequencing
+batches are balanced across arms — if one arm were mostly batch B1 we could not
+tell arm effects from batch effects later.
+
+```{r}
+#| label: design
+meta <- d$metadata
+
+cat("samples:", nrow(meta),
+    " unique participants:", n_distinct(meta$participant_id), "\n\n")
+
+table(meta$arm)
+table(meta$arm, meta$rnaseq_batch)   # arm (rows) x batch (columns)
+table(meta$arm, meta$bv)             # BV status (Nugent-based) per arm
+```
+
+```{r}
+#| label: design-ranges
+# Ranges of the numeric columns: Nugent score is 0-10, vaginal pH ~3.5-6.
+summary(meta |> select(nugent, ph))
+table(meta$any_sti)
+
+check(!any(is.na(meta)), "no missing values in the metadata")
+```
+
+**What we learned:** 93 people, one sample each, three arms (injectable 39,
+pill 28, ring 26). The two sequencing batches are almost perfectly balanced
+across arms, which is what we want. No missing values anywhere in the
+metadata.
+
+## 2. Do the six files agree? (the most important check)
+
+Both count tables have **features in rows, samples in columns**. Almost every
+tool we will use matches the count table's column 1 to the metadata's row 1
+*by position*, without checking names. If the orders ever differed, nothing
+would warn us — results would just be wrong. So we check it explicitly.
+
+```{r}
+#| label: order
+check(identical(colnames(d$species), meta$sample_id),
+      "microbiome columns match metadata rows, in the same order")
+check(identical(colnames(d$genes), meta$sample_id),
+      "rnaseq columns match metadata rows, in the same order")
+check(identical(d$cytokines$sample_id, meta$sample_id),
+      "cytokine rows match metadata rows, in the same order")
+check(!any(duplicated(meta$sample_id)), "no duplicate sample IDs")
+
+# Internal consistency: the bv column should agree with the Nugent score,
+# which is what it was derived from (>= 7 is the usual cut-off for positive).
+check(all((meta$nugent >= 7) == (meta$bv == "positive")),
+      "bv label agrees with the Nugent >= 7 cut-off for every sample")
+```
+
+All five pass, so we can use any of the tables without re-ordering.
+
+## 3. Microbiome counts
+
+Counts must be whole numbers (you cannot sequence 0.5 of a read) and never
+negative. We also look at **library size** — the total counts per sample, i.e.
+how deeply that sample was sequenced. Very shallow samples give noisy
+estimates and are the usual reason to exclude a sample.
+
+```{r}
+#| label: micro-qc
+sp <- d$species
+
+check(all(sp == round(sp)), "species counts are whole numbers")
+check(all(sp >= 0),       "no negative counts")
+check(!any(is.na(sp)),    "no missing values")
+
+cat("features (species):", nrow(sp), " samples:", ncol(sp), "\n")
+```
+
+```{r}
+#| label: micro-depth
+# Library size = column sums: total counts assigned to that sample.
+depth <- tibble(
+  sample_id = colnames(sp),
+  reads     = colSums(sp),
+  arm       = meta$arm,
+  batch     = meta$rnaseq_batch
+)
+summary(depth$reads)
+
+ggplot(depth, aes(arm, reads)) +
+  geom_col() +                              # one bar per sample
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Microbiome sequencing depth, per sample",
+       subtitle = "One bar per person",
+       x = NULL, y = "Total counts per sample")
+```
+
+```{r}
+#| label: micro-depth-flags
+shallow <- depth |> filter(reads < 10000) |> arrange(reads)
+shallow
+
+check(nrow(shallow) == 0, "no sample below 10,000 counts (a shallow-sample cut-off)")
+
+# How many species were never seen at all?
+zero_species <- sum(rowSums(sp) == 0)
+check(zero_species < nrow(sp) / 2,
+      paste("fewer than half the species rows are all-zero (actual:", zero_species, "of", nrow(sp), ")"))
+
+# The species we do see should look like a vaginal community:
+# Lactobacillus is usually the most abundant genus.
+rel <- sweep(sp, 2, colSums(sp), "/")       # each sample's counts / its total
+lac <- grepl("lactobacillus", rownames(rel), ignore.case = TRUE)
+cat("median Lactobacillus share per sample:", round(median(colSums(rel[lac, ])), 2), "\n")
+```
+
+**What we learned:** the table is clean (whole numbers, no negatives, no
+NAs), but it is sparse — 86 of the 220 species are **never observed in any
+sample**, and 88% of the cells are zero. That is normal for this kind of data
+but it means the "features in rows" table carries a lot of dead weight.
+One sample, `r shallow$sample_id[1]`, is shallow (`r format(shallow$reads[1], big.mark = ",")` counts vs a median around 29,000) — worth remembering, though not bad enough to act on. Lactobacillus (mostly *L. iners* and *L. crispatus*) dominates the median sample, as expected for this body site.
+
+## 4. RNAseq counts
+
+Same checks, plus one specific to this table: every gene in the count table
+should also be in the annotation file (`05_gene_annotation.csv`), otherwise we
+cannot name what we find.
+
+```{r}
+#| label: rna-qc
+gn <- d$genes
+
+check(all(gn == round(gn)), "gene counts are whole numbers")
+check(all(gn >= 0),        "no negative counts")
+check(!any(is.na(gn)),     "no missing values")
+
+check(setequal(rownames(gn), d$gene_info$ensembl_gene_id),
+      "count table and annotation contain exactly the same genes")
+
+missing_symbol <- d$gene_info |> filter(is.na(symbol) | symbol == "")
+cat("genes in counts:", nrow(gn),
+    " genes missing a symbol:", nrow(missing_symbol), "\n")
+
+gdepth <- tibble(
+  sample_id = colnames(gn),
+  reads     = colSums(gn),
+  batch     = meta$rnaseq_batch
+)
+summary(gdepth$reads)
+
+ggplot(gdepth, aes(batch, reads)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "RNA sequencing depth, per sample",
+       x = "Sequencing batch", y = "Total counts per sample")
+
+cat("genes detected per sample (nonzero):",
+    min(colSums(gn > 0)), "to", max(colSums(gn > 0)), "\n")
+```
+
+**What we learned:** the gene table matches its annotation exactly (14,226
+genes in both), and no sample looks failed — every sample has 12,000+ genes
+detected. Twenty-four genes have no symbol; the helper handles that by using
+their Ensembl ID as the name, so nothing is lost. Depth is lower in batch B2
+than B1 (median about 12.0M vs 13.7M) — mild, but batch is worth including in
+any model we fit.
+
+## 5. Cytokines
+
+```{r}
+#| label: cyto-qc
+cy <- d$cytokines
+na_per_sample <- rowSums(is.na(cy[, -1]))
+
+cy |> filter(na_per_sample > 0) |> select(sample_id, il1b, il6, tnfa)
+check(all(na_per_sample %in% c(0, ncol(cy) - 1)),
+      "each sample has either all 15 cytokines or none (no half-failed samples)")
+
+# Cytokines are measurements, not counts, so we only check plausibility.
+vals <- unlist(cy[, -1])
+check(all(vals[!is.na(vals)] >= 0), "no negative concentrations")
+```
+
+**What we learned:** two samples, `B018` and `B029`, have **no cytokine values
+at all** — the assay simply failed for them. They are fine in the count tables,
+so we keep them everywhere except any cytokine analysis, which should either
+drop those two rows or let the model handle the missingness.
+
+## 6. Verdict
+
+The data are in good shape. Summary of what to carry forward:
+
+| Flag | What | What to do about it |
+|---|---|---|
+| OK | Sample IDs agree across all six files, in order | Use tables as loaded, no re-ordering needed |
+| OK | Batches balanced across arms | Batch should still go in models as a covariate |
+| OK | Counts whole, non-negative, no NAs, no failed RNAseq samples | Nothing |
+| Watch | `B006` shallow microbiome sample (5,247 counts) | Consider excluding if it behaves oddly in ordinations |
+| Watch | 86 / 220 species never observed | Pre-filter zero species before distance-based analyses |
+| Watch | `B018`, `B029` have no cytokines | Drop those two rows in cytokine analyses only |
+| Note | 24 genes lack a symbol | Helper already substitutes Ensembl IDs |
+
+**How you could check me yourself:** the claims above are all one-liners. For
+example, open `data/2-workshop2/group_b_contraception/02_microbiome_counts.csv`
+in a spreadsheet and check that column B's header is `B001` while the metadata
+file's second row also starts with `B001` — that's the order check by eye. Or
+re-run the depth figure with a different cut-off: if I am wrong about `B006`
+being the only shallow sample, the `shallow` table in section 3 will show more
+rows than I reported.
+
+## Choices made
+
+- Loaded all six files through `R/count_tables.R::read_counts("group_b")` rather than reading each CSV by hand — the alternative was six separate `read_csv()` calls, which is more code to get wrong.
+- Checked sample order with `identical()` (exact order, not just set equality) — the alternative was `setequal()`, which would pass even if the columns were shuffled, and shuffled columns are exactly the failure mode that silently corrupts DESeq2 results.
+- Kept all 93 samples in the report — the alternative was dropping `B006`, `B018` and `B029` now, but QC should flag, not decide; each analysis document can drop what matters for it.
+- Used raw (untransformed) counts for every check — the alternative was checking relative abundances, but normalisation is a later step and raw counts are where errors live.
+- Used 10,000 counts as the "shallow" cut-off for flagging (not excluding) microbiome samples — the alternative cut-offs (1,000 or 5,000) would flag nothing here; the median is ~29,000 and only `B006` sits low.
+- Judged batch balance and depth differences by eye (tables and plots) — the alternative was a formal test (e.g. a Kruskal–Wallis on depth by batch), overkill for 93 samples where the medians are close.
+- Checked `bv` against the Nugent >= 7 cut-off — the alternative was trusting the label, but a label that disagrees with its source score is a classic QC catch.
+- Treated the 15 cytokines as continuous measurements and only checked for negatives and failed assays — the alternative, distribution checks per cytokine, belongs in the cytokine analysis document where a transform would be chosen.

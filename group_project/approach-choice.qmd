@@ -1,0 +1,118 @@
+---
+title: "Which approach we kept, and why"
+subtitle: "Study B — contraception and the vaginal microbiome"
+author: "Data Science for Biology workshop group project"
+date: today
+format:
+  docx:
+    toc: false
+    number-sections: false
+---
+
+## What the question is asking
+
+For each of our two study questions we were offered two alternative routes:
+an established/default approach and a compositional or molecular
+alternative. This document states which route we kept as the primary
+analysis, which we kept as a robustness check, and why. In both cases we
+did **not** pick just one: we kept the primary route *and* the alternative
+route, because when both agree the conclusion is much stronger.
+
+The guiding principle is simple: if a result only appears with one
+measurement choice and disappears with another, you should not trust it. If
+it survives both, you can say the result does not depend on that particular
+choice.
+
+## Question 1 — Community composition: Bray–Curtis vs. Aitchison distance
+
+### The two routes
+
+1. **Bray–Curtis distance on compositional shares.** This is the default in
+   microbial ecology. It compares samples by how much their species
+   proportions differ, giving more weight to abundant species. It is what
+   Tuesday's ordination module used.
+2. **Aitchison distance.** This transforms counts with centred log-ratios
+   (CLR) and then uses Euclidean distance. It is the distance that respects
+   the compositional nature of sequencing data: only the *ratios* between
+   taxa carry information, not the absolute counts.
+
+### Which we kept
+
+We kept **Bray–Curtis as the primary analysis** and reported **Aitchison as
+a robustness check**. We did not discard either.
+
+### Reason
+
+Bray–Curtis is the standard for microbiome ordination and PERMANOVA, so it
+is the natural language in which to report the result. Aitchison is the
+compositional-data alternative that answers the same question in a
+mathematically correct way for relative-abundance data. If the two distances
+gave opposite answers we would have to dig deeper; since they agree (R² ≈
+0.03, p ≈ 0.15 for both), we can say the "no difference" conclusion does
+not depend on the distance metric.
+
+### What we read
+
+- Anderson, M. J. (2001). A new method for non-parametric multivariate
+  analysis of variance. *Austral Ecology*, 26(1), 32–46.
+  https://doi.org/10.1111/j.0006-341X.2001.00470.x — this is the
+  PERMANOVA paper; it explains why the method uses a distance matrix and
+  how R² and permutation p-values work.
+- Aitchison, J. (1986). *The Statistical Analysis of Compositional Data*.
+  Chapman & Hall — the foundation for Aitchison distance and the CLR
+  transform. The key point is that compositional data live in a simplex,
+  so Euclidean distances on raw proportions are misleading and distances
+  should be computed on log-ratios.
+
+## Question 2 — BV prevalence: clinical Nugent label vs. molecular community type
+
+### The two routes
+
+1. **Clinical BV label from the Nugent score.** Nugent scoring is the
+   standard Gram-stain method: scores 0–3 are negative, 4–6 intermediate,
+   7–10 positive for bacterial vaginosis. This is what a clinician would
+   record.
+2. **Molecular community type from the sequencing data.** Tuesday's anatomy
+   module defined a community as *Lactobacillus*-dominated if more than 50%
+   of reads belonged to *Lactobacillus* species, otherwise as anaerobe-type.
+   This is a sequencing-based proxy for BV.
+
+### Which we kept
+
+We kept the **clinical Nugent label as the primary outcome** and reported
+**the molecular community type as a secondary view**. Again, we kept both.
+
+### Reason
+
+The Nugent score is the clinical reference, so it is the right primary
+outcome for asking whether BV is more common in one arm. The molecular
+community type is an independent check: it is measured from the same
+sequencing table, but it is not the clinical definition. If the two
+measures disagreed, we would worry that the sequencing failed to capture
+BV; since they agree (clinical label p = 0.45, molecular type p = 0.53, and
+37 of 39 clinical positives are anaerobe-type), we can say the "no
+difference" conclusion is not an artefact of how BV was defined.
+
+### What we read
+
+- Nugent, R. P., Krohn, M. A., & Hillier, S. L. (1991). Reliability of
+  diagnosing bacterial vaginosis is improved by a standardized method of
+  Gram stain interpretation. *Journal of Clinical Microbiology*, 29(2),
+  297–301. https://doi.org/10.1128/jcm.29.2.297-301.1991 — this defines the
+  Nugent score and explains why it became the standard.
+- Ravel, J., Gajer, P., Abdo, Z., Schneider, G. M., Koenig, S. S. K.,
+  McCulle, S. L., … Forney, L. J. (2011). Vaginal microbiome of
+  reproductive-age women. *Proceedings of the National Academy of
+  Sciences*, 108(supplement 1), 4680–4687.
+  https://doi.org/10.1073/pnas.1002611107 — this paper describes vaginal
+  community state types, including the lactobacillus-dominated types and
+  the anaerobe types that correspond to BV.
+
+## Bottom line
+
+For **composition**, the primary result is the Bray–Curtis PERMANOVA, and
+the Aitchison distance confirms it. For **BV**, the primary result is the
+clinical Nugent label, and the molecular community type confirms it. In
+both cases we kept both routes because agreement between them makes the
+"no evidence of a difference" conclusion much more credible than either
+route alone.
